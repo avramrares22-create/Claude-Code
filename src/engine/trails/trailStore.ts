@@ -11,6 +11,7 @@ import { decodeCell, type TrailCellV1 } from './cellFormat';
 import { dataUrl } from '../util/base';
 import type * as GeoJSON from 'geojson';
 import type { OsmElement, OsmNode, OsmRelation, OsmWay, Poi, Trail, TrailKind, TrailRoute } from './types';
+import { fetchJson, HttpError } from '../util/net';
 
 export type Loader = (bbox: BBox, signal?: AbortSignal, cell?: [number, number, number]) => Promise<OsmElement[]>;
 
@@ -29,9 +30,13 @@ function hasStaticCells(): Promise<boolean> {
  */
 export const defaultLoader: Loader = async (bbox, signal, cell) => {
   if (cell && (await hasStaticCells())) {
-    const res = await fetch(dataUrl(`trails/${cell[0]}/${cell[1]}/${cell[2]}.json`), { signal });
-    if (res.ok) return decodeCell((await res.json()) as TrailCellV1);
-    if (res.status === 404) return []; // no trails in this cell (e.g. outside Romania)
+    try {
+      return decodeCell(await fetchJson<TrailCellV1>(dataUrl(`trails/${cell[0]}/${cell[1]}/${cell[2]}.json`), { signal }));
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) return []; // no trails in this cell (e.g. outside Romania)
+      if (signal?.aborted) throw err;
+      // Static host hiccup: fall through to live Overpass.
+    }
   }
   return fetchOverpass(bbox, signal);
 };

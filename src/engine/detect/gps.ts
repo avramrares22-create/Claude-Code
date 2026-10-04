@@ -7,6 +7,7 @@ import { haversine } from '../geo/geodesy';
 import type { OsmWay, Tags, Trail } from '../trails/types';
 import { dilate, erode, forEachCellOnLine, Grid, rasterizeLines, removeSmall, skeletonize, traceSkeleton } from './raster';
 import { chainsToTrails } from './vectorize';
+import { fetchSafe } from '../util/net';
 
 export interface TracePoint {
   lat: number;
@@ -42,8 +43,7 @@ const API = 'https://api.openstreetmap.org/api/0.6/trackpoints';
 export async function fetchTraces(bbox: BBox, maxPages = 12, signal?: AbortSignal): Promise<Trace[]> {
   const traces: Trace[] = [];
   for (let page = 0; page < maxPages; page++) {
-    const res = await fetch(`${API}?bbox=${bbox.join(',')}&page=${page}`, { signal });
-    if (!res.ok) throw new Error(`OSM trackpoints ${res.status}`);
+    const res = await fetchSafe(`${API}?bbox=${bbox.join(',')}&page=${page}`, { signal, timeoutMs: 30_000 });
     const xml = await res.text();
     const got = parseGpx(xml);
     traces.push(...got);

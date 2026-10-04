@@ -4,6 +4,7 @@
  */
 import { TERRAIN, type BBox } from '../config';
 import { latToTileY, lngToTileX, tilesInBBox } from '../geo/mercator';
+import { fetchSafe } from '../util/net';
 
 export interface ElevationProvider {
   /** Loads whatever is needed to answer `get` synchronously inside bbox. */
@@ -82,8 +83,7 @@ export class TerrariumElevation implements ElevationProvider {
 }
 
 async function fetchTile(url: string): Promise<Tile> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`DEM tile ${res.status}`);
+  const res = await fetchSafe(url, { timeoutMs: 15_000 });
   const bmp = await createImageBitmap(await res.blob());
   const canvas = new OffscreenCanvas(bmp.width, bmp.height);
   const g = canvas.getContext('2d', { willReadFrequently: true })!;

@@ -10,7 +10,7 @@ import type * as GeoJSON from 'geojson';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { HIRES, IMAGERY, MAX_MAP_ZOOM, OVERPASS, ROMANIA_BBOX, ROMANIA_CENTER, type BBox, type HiresProvider } from './config';
 import { chooseHires } from './imagery/hires';
-import { imageryStats, imageryTileUrl, registerImageryProtocol } from './imagery/imageryProtocol';
+import { imageryStats, imageryTileUrl, registerImageryProtocol, type ImageryHandle } from './imagery/imageryProtocol';
 import type { ImageryMode } from './imagery/renderTile';
 import { SceneIndex } from './imagery/sceneIndex';
 import { TrailGraph } from './routing/graph';
@@ -23,6 +23,7 @@ import { TerrariumElevation } from './terrain/elevation';
 import { TrailStore } from './trails/trailStore';
 import type { Access, Trail, TrailKind } from './trails/types';
 import { Discovery } from './detect/discovery';
+import { downloadArea, planOfflineArea, type OfflinePlan, type Progress } from './offline';
 import { mergeDetections } from './detect/merge';
 
 /** Properties of a trail feature on the map (see TrailStore.trailsGeoJSON). */
@@ -84,7 +85,7 @@ export class MapEngine {
   readonly ready: Promise<void>;
   readonly imageryStats = imageryStats;
   private sceneIndex: Promise<SceneIndex>;
-  private unregisterImagery: () => void;
+  private imagery: ImageryHandle;
   private handlers = new Map<keyof EngineEvents, Set<Handler<never>>>();
   private graph: TrailGraph | null = null;
   private trailAbort: AbortController | null = null;
@@ -99,7 +100,7 @@ export class MapEngine {
       (i) => this.emit('imagery:index', { grids: i.size }),
       (e: Error) => this.emit('imagery:error', { message: e.message }),
     );
-    this.unregisterImagery = registerImageryProtocol(this.sceneIndex);
+    this.imagery = registerImageryProtocol(this.sceneIndex);
 
     const [w, s, e, n] = ROMANIA_BBOX;
     this.map = new maplibregl.Map({
@@ -157,6 +158,8 @@ export class MapEngine {
     m.addSource('trails', { type: 'geojson', data: EMPTY, promoteId: 'wayId' });
     m.addSource('pois', { type: 'geojson', data: EMPTY });
     m.addSource('route', { type: 'geojson', data: EMPTY });
+    m.addSource('track', { type: 'geojson', data: EMPTY });
+    m.addSource('imported', { type: 'geojson', data: EMPTY });
 
     // Zoom interpolation must be the outermost expression, so per-feature
     // variation (marked vs other) goes inside each stop.
@@ -227,6 +230,13 @@ export class MapEngine {
       paint: { 'text-color': '#fff', 'text-halo-color': 'rgba(0,0,0,0.8)', 'text-halo-width': 1.2 },
     });
     m.addLayer({
+      id: 'imported-line',
+      type: 'line',
+      source: 'imported',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#c38bff', 'line-width': width(3), 'line-dasharray': [1.5, 1] },
+    });
+    m.addLayer({
       id: 'route-casing',
       type: 'line',
       source: 'route',
@@ -239,6 +249,13 @@ export class MapEngine {
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#ff7a00', 'line-width': width(3.2) },
+    });
+    m.addLayer({
+      id: 'track-line',
+      type: 'line',
+      source: 'track',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#3ea6ff', 'line-width': width(3) },
     });
     m.addLayer({
       id: 'pois-circle',
@@ -401,16 +418,28 @@ export class MapEngine {
    * the latest clear Sentinel-2 scene (what the ground shows). Agreeing
    * detections are fused. Results are cached on the device for 30 days.
    */
-  async discoverHiddenTrails(signal?: AbortSignal): Promise<DiscoveryResult> {
+  async discoverHiddenTrails(signal?: AbortSignal, onStep?: (step: 'map' | 'gps' | 'imagery', status: 'start' | 'done' | 'failed') => void): Promise<DiscoveryResult> {
     if (this.map.getZoom() < 12) throw new Error('Zoom in closer to scan for hidden trails');
     const b = this.map.getBounds();
     const view: BBox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     const box = Discovery.scanBox(view);
     // OSM must be loaded first so only *unmapped* corridors come back.
+    onStep?.('map', 'start');
     await this.trails.ensure(box, signal);
+    onStep?.('map', 'done');
+    const track = <T,>(step: 'gps' | 'imagery', p: Promise<T>) => {
+      onStep?.(step, 'start');
+      return p.then(
+        (v) => (onStep?.(step, 'done'), v),
+        (e) => {
+          onStep?.(step, 'failed');
+          throw e;
+        },
+      );
+    };
     const [gps, img] = await Promise.allSettled([
-      this.discovery.scanGps(view, this.trails.osmWays(), signal),
-      this.discovery.scanImagery(view, this.trails.osmWays()),
+      track('gps', this.discovery.scanGps(view, this.trails.osmWays(), signal)),
+      track('imagery', this.discovery.scanImagery(view, this.trails.osmWays())),
     ]);
     const key = box.join(',');
     if (gps.status === 'fulfilled') this.detected.gps.set(key, gps.value.trails);
@@ -429,6 +458,25 @@ export class MapEngine {
     };
   }
 
+  /** Shows a recorded track or imported GPX line (null clears it). */
+  setLine(which: 'track' | 'imported', coords: Array<[number, number]> | Array<Array<[number, number]>> | null) {
+    const lines = !coords || !coords.length ? [] : Array.isArray(coords[0][0]) ? (coords as Array<Array<[number, number]>>) : [coords as Array<[number, number]>];
+    (this.map.getSource(which) as GeoJSONSource | undefined)?.setData({
+      type: 'FeatureCollection',
+      features: lines.filter((l) => l.length > 1).map((l) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: l } })),
+    });
+  }
+
+  /** Plans everything needed to use the current view offline. */
+  planOffline(): OfflinePlan {
+    const b = this.map.getBounds();
+    return planOfflineArea([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], this.hires);
+  }
+
+  downloadOffline(plan: OfflinePlan, name: string, progress: Progress, signal?: AbortSignal) {
+    return downloadArea(plan, name, { imagery: this.imagery, trails: this.trails, hires: this.hires }, progress, signal);
+  }
+
   flyTo(lngLat: [number, number], zoom = 14) {
     this.map.flyTo({ center: lngLat, zoom, essential: true });
   }
@@ -439,6 +487,6 @@ export class MapEngine {
   destroy() {
     this.trailAbort?.abort();
     this.map.remove();
-    this.unregisterImagery();
+    this.imagery.unregister();
   }
 }

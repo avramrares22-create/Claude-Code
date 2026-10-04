@@ -32,8 +32,20 @@ function staticMaxZoom(): Promise<number> {
   return staticMeta;
 }
 
-export function registerImageryProtocol(index: Promise<SceneIndex>): () => void {
+export interface ImageryHandle {
+  unregister(): void;
+  /** Renders (and caches on device) a tile without displaying it — for offline areas. */
+  prefetch(z: number, x: number, y: number, mode?: ImageryMode, signal?: AbortSignal): Promise<void>;
+}
+
+export function registerImageryProtocol(index: Promise<SceneIndex>): ImageryHandle {
   const pool = new ImageryWorkerPool();
+  const jobFor = async (mode: ImageryMode, z: number, x: number, y: number) => {
+    const scenes = (await index).scenesFor(tileBBox(z, x, y)).map((s) => ({ id: s.id, epsg: s.epsg }));
+    const sig = hashString(scenes.map((s) => s.id).join(','));
+    const cacheKey = `https://tiles.nature.local/s2/v${IMAGERY.rendererVersion}/${mode}/${z}/${x}/${y}.png?s=${sig}`;
+    return { z, x, y, mode, scenes, cacheKey };
+  };
   maplibregl.addProtocol(IMAGERY_PROTOCOL, async (params, abort) => {
     const m = /^s2:\/\/(truecolor|ndvi)\/(\d+)\/(\d+)\/(\d+)/.exec(params.url);
     if (!m) throw new Error(`Bad imagery url ${params.url}`);
@@ -44,14 +56,12 @@ export function registerImageryProtocol(index: Promise<SceneIndex>): () => void 
       const res = await fetch(dataUrl(`s2/${z}/${x}/${y}.png`), { signal: abort.signal }).catch(() => null);
       if (res?.ok) return { data: await res.arrayBuffer() };
     }
-    const scenes = (await index).scenesFor(tileBBox(z, x, y)).map((s) => ({ id: s.id, epsg: s.epsg }));
-    if (scenes.length === 0) return { data: new ArrayBuffer(0) };
-    const sig = hashString(scenes.map((s) => s.id).join(','));
-    const cacheKey = `https://tiles.nature.local/s2/v${IMAGERY.rendererVersion}/${mode}/${z}/${x}/${y}.png?s=${sig}`;
+    const job = await jobFor(mode, z, x, y);
+    if (job.scenes.length === 0) return { data: new ArrayBuffer(0) };
     const t0 = performance.now();
     imageryStats.requested++;
     try {
-      const data = await pool.render({ z, x, y, mode, scenes, cacheKey }, abort.signal);
+      const data = await pool.render(job, abort.signal);
       const ms = performance.now() - t0;
       imageryStats.done++;
       imageryStats.totalMs += ms;
@@ -66,8 +76,14 @@ export function registerImageryProtocol(index: Promise<SceneIndex>): () => void 
       throw err;
     }
   });
-  return () => {
-    maplibregl.removeProtocol(IMAGERY_PROTOCOL);
-    pool.terminate();
+  return {
+    unregister() {
+      maplibregl.removeProtocol(IMAGERY_PROTOCOL);
+      pool.terminate();
+    },
+    async prefetch(z, x, y, mode = 'truecolor', signal) {
+      const job = await jobFor(mode, z, x, y);
+      if (job.scenes.length) await pool.render(job, signal);
+    },
   };
 }

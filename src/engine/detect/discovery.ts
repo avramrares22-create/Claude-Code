@@ -8,10 +8,12 @@ import type { OsmWay, Trail } from '../trails/types';
 import { kvGet, kvSet } from '../util/kvStore';
 import type { DetectReply, DetectRequest } from './detect.worker';
 import { fetchTraces } from './gps';
+import { fetchJson } from '../util/net';
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
 const CACHE_TTL = 30 * 86_400_000;
+const SCAN_TIMEOUT_MS = 120_000;
 const BASE = import.meta.env.BASE_URL;
 /** Largest area scanned at once (the OSM API caps trackpoint boxes at 0.25 deg²). */
 const MAX_SPAN = 0.08;
@@ -23,17 +25,39 @@ export class Discovery {
 
   private run(req: DistributiveOmit<DetectRequest, 'id'>): Promise<Trail[]> {
     if (!this.worker) {
-      this.worker = new Worker(new URL('./detect.worker.ts', import.meta.url), { type: 'module' });
-      this.worker.onmessage = (ev: MessageEvent<DetectReply>) => {
+      const w = new Worker(new URL('./detect.worker.ts', import.meta.url), { type: 'module' });
+      w.onmessage = (ev: MessageEvent<DetectReply>) => {
         this.pending.get(ev.data.id)?.(ev.data);
         this.pending.delete(ev.data.id);
       };
+      // A crash (e.g. memory pressure on iOS) fails in-flight scans; the next scan respawns.
+      w.onerror = (ev) => {
+        ev.preventDefault();
+        this.reset(`Trail detector crashed: ${ev.message || 'unknown error'}`);
+      };
+      this.worker = w;
     }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, (r) => (r.error ? reject(new Error(r.error)) : resolve(r.trails ?? [])));
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('Trail scan timed out'));
+      }, SCAN_TIMEOUT_MS);
+      this.pending.set(id, (r) => {
+        clearTimeout(timer);
+        if (r.error) reject(new Error(r.error));
+        else resolve(r.trails ?? []);
+      });
       this.worker!.postMessage({ ...req, id } as DetectRequest);
     });
+  }
+
+  private reset(message: string) {
+    this.worker?.terminate();
+    this.worker = null;
+    for (const done of this.pending.values()) done({ id: -1, error: message });
+    this.pending.clear();
   }
 
   /** Clamps a view to a scan box around its centre, snapped to a grid so caching works. */
@@ -62,7 +86,7 @@ export class Discovery {
     const key = `imagery-detect:v1:${bbox.join(',')}`;
     const cached = await kvGet<Trail[]>(key, CACHE_TTL);
     if (cached) return { bbox, trails: cached, cached: true };
-    const meta = (await (await fetch(`${BASE}models/trailnet.json`)).json()) as { threshold: number };
+    const meta = await fetchJson<{ threshold: number }>(`${BASE}models/trailnet.json`);
     const origin = self.location.origin;
     const trails = await this.run({
       type: 'imagery',
