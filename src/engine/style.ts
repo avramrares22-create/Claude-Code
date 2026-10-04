@@ -2,13 +2,14 @@
 import type { RasterLayerSpecification, StyleSpecification } from 'maplibre-gl';
 import { HIRES, HIRES_FROM_ZOOM, IMAGERY, REFERENCE, ROMANIA_BBOX, TERRAIN } from './config';
 import { imageryTileUrl } from './imagery/imageryProtocol';
+import { basemapForStyle, type BaseMode, type Theme } from './mapStyle';
 
 const FONT = ['Noto Sans Regular'];
 const FONT_BOLD = ['Noto Sans Bold'];
-const FONT_ITALIC = ['Noto Sans Italic'];
 
-export function buildBaseStyle(): StyleSpecification {
+export function buildBaseStyle(theme: Theme = 'light', mode: BaseMode = 'map'): StyleSpecification {
   const year = new Date().getFullYear();
+  const bm = basemapForStyle(theme, mode);
   return {
     version: 8,
     glyphs: REFERENCE.glyphs,
@@ -61,6 +62,8 @@ export function buildBaseStyle(): StyleSpecification {
     },
     layers: [
       { id: 'background', type: 'background', paint: { 'background-color': '#14231a' } },
+      // Drawn map (landcover, water, buildings): visible in "Map" mode.
+      ...bm.below,
       {
         id: 'imagery',
         type: 'raster',
@@ -84,41 +87,13 @@ export function buildBaseStyle(): StyleSpecification {
         type: 'hillshade',
         source: 'hillshadeDem',
         paint: {
-          // Relief helps on the 10 m mosaic; over sharp photos it just darkens slopes.
           'hillshade-exaggeration': ['interpolate', ['linear'], ['zoom'], 12, 0.3, 15, 0.12],
           'hillshade-shadow-color': 'rgba(10,20,30,0.55)',
           'hillshade-highlight-color': 'rgba(255,250,235,0.25)',
         },
       },
-      {
-        id: 'ref-boundary',
-        type: 'line',
-        source: 'reference',
-        'source-layer': 'boundary',
-        filter: ['==', ['get', 'admin_level'], 2],
-        paint: { 'line-color': 'rgba(255,255,255,0.6)', 'line-width': 1.2, 'line-dasharray': [3, 2] },
-      },
-      {
-        id: 'ref-water-name',
-        type: 'symbol',
-        source: 'reference',
-        'source-layer': 'water_name',
-        layout: { 'text-field': ['get', 'name'], 'text-font': FONT_ITALIC, 'text-size': 12 },
-        paint: { 'text-color': '#bfe3ff', 'text-halo-color': 'rgba(0,20,40,0.8)', 'text-halo-width': 1.2 },
-      },
-      {
-        id: 'ref-places',
-        type: 'symbol',
-        source: 'reference',
-        'source-layer': 'place',
-        filter: ['in', ['get', 'class'], ['literal', ['city', 'town', 'village', 'hamlet']]],
-        layout: {
-          'text-field': ['get', 'name'],
-          'text-font': ['match', ['get', 'class'], ['city', 'town'], ['literal', FONT_BOLD], ['literal', FONT]],
-          'text-size': ['match', ['get', 'class'], 'city', 15, 'town', 13, 11],
-        },
-        paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,0.75)', 'text-halo-width': 1.4 },
-      },
+      // Roads and labels (roads hidden in plain "Satellite").
+      ...bm.above,
     ],
     sky: {
       'sky-color': '#7fb2e5',

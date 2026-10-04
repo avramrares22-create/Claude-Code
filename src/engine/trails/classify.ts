@@ -90,8 +90,10 @@ export function hiddenScore(tags: Tags, inRoute: boolean): number {
 
 export const HIDDEN_THRESHOLD = 0.6;
 
-export const ROAD_HIGHWAYS = new Set(['tertiary', 'unclassified', 'residential', 'service']);
-const PATH_HIGHWAYS = new Set(['path', 'footway', 'bridleway', 'cycleway', 'steps', 'via_ferrata']);
+export const ROAD_HIGHWAYS = new Set(['tertiary', 'unclassified', 'residential', 'living_street', 'service']);
+/** Roads open to cars, used by the bike "keep off car roads" preference (service roads are quiet). */
+export const CAR_ROADS = new Set(['tertiary', 'unclassified', 'residential']);
+const PATH_HIGHWAYS = new Set(['path', 'footway', 'bridleway', 'cycleway', 'steps', 'via_ferrata', 'pedestrian']);
 
 const ACCESS_KEYS: Record<TravelMode, string[]> = {
   foot: ['access', 'foot'],

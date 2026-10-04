@@ -6,7 +6,7 @@ export function trailQuery([w, s, e, n]: BBox): string {
   const b = `${s},${w},${n},${e}`;
   return `[out:json][timeout:25];
 (
-  way["highway"~"^(path|track|footway|bridleway|cycleway|steps|via_ferrata|tertiary|unclassified)$"]["footway"!~"^(sidewalk|crossing|traffic_island|access_aisle)$"](${b});
+  way["highway"~"^(path|track|footway|bridleway|cycleway|steps|via_ferrata|pedestrian|tertiary|unclassified|residential|living_street)$"]["footway"!~"^(traffic_island|access_aisle)$"](${b});
   way["highway"="service"]["service"!~"^(driveway|parking_aisle|drive-through)$"](${b});
 )->.w;
 .w out body geom qt;

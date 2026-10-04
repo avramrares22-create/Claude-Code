@@ -6,3 +6,4 @@ export { ROMANIA_BBOX, ROMANIA_CENTER } from './config';
 export { listOfflineAreas, removeOfflineArea, planSize, storageUsage, areaTooLarge, PACKS, type OfflineArea, type OfflinePlan, type PackDef } from './offline';
 export { buildGpx, parseGpxFile, type GpxData, type GpxPoint } from './gpx';
 export { RouteFollower, announce, buildManeuvers, type Maneuver, type NavState, type TurnType } from './navigation';
+export type { BaseMode, Theme } from './mapStyle';

@@ -5,7 +5,7 @@
  * reported time — e.g. to seek hidden trails or stay off asphalt.
  */
 import { haversine } from '../geo/geodesy';
-import { HIDDEN_THRESHOLD } from '../trails/classify';
+import { CAR_ROADS, HIDDEN_THRESHOLD } from '../trails/classify';
 import type { Trail, TravelMode } from '../trails/types';
 import type { TrailGraph } from './graph';
 import { expertModel, type RouteModel } from './routeModel';
@@ -24,6 +24,8 @@ export interface RoutePreferences {
   maxMtbScale: number;
   /** Refuse ways whose legal access for this mode is unknown (e.g. untagged forest roads for moto). */
   strictAccess: boolean;
+  /** Bike: ride sidewalks, cycleways, paths and tracks; use roads with cars only when there's no other way. */
+  avoidCarRoads?: boolean;
 }
 
 export const DEFAULT_PREFS: RoutePreferences = {
@@ -33,6 +35,7 @@ export const DEFAULT_PREFS: RoutePreferences = {
   maxDifficulty: 4,
   maxMtbScale: 3,
   strictAccess: false,
+  avoidCarRoads: true,
 };
 
 export interface Route {
@@ -117,7 +120,11 @@ function preferenceMultiplier(t: Trail, prefs: RoutePreferences): number {
   if (prefs.offroad > 0 && t.surfaceClass === 'paved') m *= 1 + 0.8 * prefs.offroad;
   // Detected trails are less certain to exist: a small, confidence-weighted surcharge.
   if (t.kind === 'detected') m *= 1 + 0.3 * (1 - t.confidence);
-  if (t.access[prefs.mode] === 'unknown') m *= 1.1;
+  if (t.access[prefs.mode] === 'unknown' && !(prefs.mode === 'bike' && prefs.avoidCarRoads && !CAR_ROADS.has(t.tags.highway))) m *= 1.1;
+  if (prefs.mode === 'bike' && prefs.avoidCarRoads !== false) {
+    if (CAR_ROADS.has(t.tags.highway)) m *= 4;
+    else if (t.tags.highway === 'living_street' || t.tags.highway === 'service') m *= 1.5;
+  }
   return m;
 }
 
