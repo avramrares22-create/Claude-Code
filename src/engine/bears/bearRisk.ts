@@ -65,6 +65,15 @@ export class BearGrid {
     );
   }
 
+  /** Raw bytes of one loaded ~200 m tile (for drawing the bear-zones layer). */
+  fineTile(key: string): Uint8Array | null | undefined {
+    return this.fine.get(key);
+  }
+
+  get fineInfo(): FineMeta | null {
+    return this.fineMeta;
+  }
+
   /** Fine density at a point, or null where no fine tile is loaded. */
   fineAt(lng: number, lat: number): number | null {
     const fm = this.fineMeta;

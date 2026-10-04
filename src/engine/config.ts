@@ -94,4 +94,4 @@ export const HIRES: HiresProvider[] = [
 
 /** Zoom where high-res imagery fades in over the Sentinel mosaic. */
 export const HIRES_FROM_ZOOM = 13.5;
-export const MAX_MAP_ZOOM = 21;
+export const MAX_MAP_ZOOM = 22;
