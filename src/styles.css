@@ -1025,3 +1025,105 @@ body.navigating .fabs,
 body.navigating .sheet {
   display: none;
 }
+
+/* ------------------------------------------------------------------ bear risk (navigation corner) */
+.bear-risk {
+  position: absolute;
+  right: 10px;
+  bottom: calc(var(--safe-bottom) + 96px);
+  z-index: 8;
+  min-width: 128px;
+  max-width: min(340px, calc(100vw - 20px));
+  padding: 9px 12px 10px;
+  border-radius: 16px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.bear-risk.expanded {
+  bottom: calc(var(--safe-bottom) + 96px);
+  max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 260px);
+  overflow-y: auto;
+}
+
+.br-head {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.br-wait {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.br-row {
+  display: grid;
+  grid-template-columns: 40px 34px auto;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.35;
+}
+
+.br-row small {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.br-row b {
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.br-row span {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.lvl-low {
+  color: #7ee08a;
+}
+
+.lvl-moderate {
+  color: #ffd166;
+}
+
+.lvl-high {
+  color: #ff9f43;
+}
+
+.lvl-very-high {
+  color: #ff5d5d;
+}
+
+.br-more {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.br-more p {
+  margin: 0 0 6px;
+}
+
+.br-more ul {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+
+.br-more li {
+  margin-bottom: 3px;
+}
+
+.br-note {
+  color: var(--muted);
+  font-size: 12px;
+}

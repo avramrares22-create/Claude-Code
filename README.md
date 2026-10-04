@@ -17,6 +17,7 @@ Natura is an installable web app (PWA) for iOS and Linux, built on a custom map 
   - a heading-up 3D camera
   - spoken turn-by-turn directions
   - automatic rerouting when you leave the route
+- **Bear risk while navigating.** A corner panel shows a 1–100 bear risk for 10 km and 1 km around you. It updates every 30 s or every 150 m, and voice warns you when the risk right around you becomes very high. Tap it for details and safety tips. See *Bear risk model* below.
 - **Offline maps.** Download all of Romania (overview, zoom 6–12), a mountain range, a city, or just the area on screen. Satellite, terrain, labels, trails and routing then work with no signal. Downloads can be paused and resumed. Search falls back to places and trails stored on the phone.
 - **Made for the mountains:**
   - track recording with GPX export
@@ -30,7 +31,7 @@ Everything runs on the phone. There are no API keys and no backend; static data 
 ```
 npm install
 npm run dev        # http://localhost:5173 (on your LAN too, so an iPhone can open it)
-npm test           # 96 unit tests
+npm test           # 103 unit tests
 npm run build      # typecheck and production build in dist/
 ```
 
@@ -106,6 +107,22 @@ Retrain with:
 npm run routenet:collect && npm run routenet:build && npm run routenet:train
 ```
 
+**Bear risk model** (`ml/bears/build_bear_grid.py` → `public/bears/density.bin`, 450 KB, works offline).
+
+- **Census.** Bears per county come from the 2025 national genetic census: about 11,650 bears, from more than 24,000 DNA samples.
+- **Habitat model.** A gradient-boosted presence/background model spreads each county's bears over its habitat. It learned from 599 bear sightings with about 1 km coordinates (GBIF, mostly observation.org), ESA WorldCover land cover and terrain.
+  - Because people report sightings, the model also learns where people and bears meet: forest edges near villages, valleys and trail corridors.
+  - Validation, 0.5° spatial blocks held out: AUC 0.82.
+  - Independent check against iNaturalist bear records it never saw: AUC 0.93.
+- **In the app**, the grid is combined with:
+  - live iNaturalist sightings from the last 30 days. These are obscured to about 20 km, so each one is weighted by the chance it really falls inside the radius.
+  - season (autumn feeding peak, winter denning)
+  - sun position (dawn, dusk and night)
+  - travel mode (quiet, fast bikes surprise bears more)
+- **The index** is logarithmic: 1 means fewer than 1 bear per 500 km², 100 means 1.5 bears per km² or more. Bands: low below 20, moderate 20–44, high 45–69, very high 70 or more.
+
+It is an encounter-likelihood estimate, not a probability of being attacked. No public geolocated attack records or live GPS-collar data exist for Romania, so neither is used. A low value never means "no bears".
+
 ## Data pipeline (GitHub Actions)
 
 - **Every push:** typecheck, tests, build.
@@ -128,4 +145,5 @@ npm run routenet:collect && npm run routenet:build && npm run routenet:train
 - Contains modified Copernicus Sentinel data (Element 84 Earth Search, `sentinel-2-c1-l2a`)
 - Trails, GPS traces and places © OpenStreetMap contributors (ODbL)
 - Aerial imagery: Ortofotoplan © ANCPI; Esri, Maxar, Earthstar Geographics
+- Bears: Romanian Ministry of Environment / INCDS "Marin Drăcea" genetic census 2025; GBIF.org and iNaturalist observations; ESA WorldCover 2021; geoBoundaries
 - Labels: OpenFreeMap. Terrain: Mapzen Terrarium (AWS Open Data)

@@ -1,0 +1,292 @@
+/**
+ * Bear risk estimate around the user (10 km and 1 km).
+ *
+ * Built from public data only, and an estimate, not a guarantee:
+ *  - Bear density grid (public/bears/density.bin, ~1 km cells). It comes from
+ *    the 2025 national genetic census (bears per county), spread over habitat
+ *    by a model trained on bear sightings, land cover and terrain
+ *    (ml/bears/build_bear_grid.py).
+ *  - Live bear sightings from iNaturalist (last 30 days). Coordinates are
+ *    obscured to ~20 km for bears, so they are weighted by the chance they
+ *    really fall inside the radius.
+ *  - Season, light (dawn/dusk/night) and travel mode, which change how likely
+ *    a close encounter is.
+ *
+ * The result is a 1–100 index on a log scale of expected bear density
+ * (encounter likelihood). It is not a probability of being attacked.
+ */
+import { BASE_URL } from '../util/base';
+import { fetchJson, fetchSafe } from '../util/net';
+
+export interface BearGridMeta {
+  west: number;
+  north: number;
+  res: number;
+  width: number;
+  height: number;
+  encoding: { zero: number; log10Min: number; log10Max: number; steps: number };
+  validation?: Record<string, unknown>;
+  sources?: string[];
+}
+
+export class BearGrid {
+  constructor(
+    readonly meta: BearGridMeta,
+    private readonly data: Uint8Array,
+  ) {}
+
+  /** Bears per km² in the cell containing the point (0 outside Romania). */
+  densityAt(lng: number, lat: number): number {
+    const { west, north, res, width, height } = this.meta;
+    const x = Math.floor((lng - west) / res);
+    const y = Math.floor((north - lat) / res);
+    if (x < 0 || y < 0 || x >= width || y >= height) return 0;
+    return this.decode(this.data[y * width + x]);
+  }
+
+  private decode(q: number): number {
+    const e = this.meta.encoding;
+    if (q === e.zero) return 0;
+    return 10 ** (e.log10Min + ((q - 1) / e.steps) * (e.log10Max - e.log10Min));
+  }
+
+  /** Mean density (bears/km²) and expected number of bears within `radiusKm`. */
+  area(lng: number, lat: number, radiusKm: number): { density: number; bears: number; peak: number } {
+    const { west, north, res, width, height } = this.meta;
+    const kmY = res * 111.32;
+    const kmX = res * 111.32 * Math.cos((lat * Math.PI) / 180);
+    const cx = (lng - west) / res;
+    const cy = (north - lat) / res;
+    const rx = Math.ceil(radiusKm / kmX) + 1;
+    const ry = Math.ceil(radiusKm / kmY) + 1;
+    let sum = 0;
+    let n = 0;
+    let peak = 0;
+    for (let y = Math.floor(cy) - ry; y <= Math.floor(cy) + ry; y++) {
+      for (let x = Math.floor(cx) - rx; x <= Math.floor(cx) + rx; x++) {
+        const dx = (x + 0.5 - cx) * kmX;
+        const dy = (y + 0.5 - cy) * kmY;
+        // Always include the cell you are in, even for radii smaller than a cell.
+        const own = x === Math.floor(cx) && y === Math.floor(cy);
+        if (!own && dx * dx + dy * dy > radiusKm * radiusKm) continue;
+        const d = x < 0 || y < 0 || x >= width || y >= height ? 0 : this.decode(this.data[y * width + x]);
+        sum += d;
+        n++;
+        if (d > peak) peak = d;
+      }
+    }
+    const density = n ? sum / n : 0;
+    return { density, bears: density * Math.PI * radiusKm * radiusKm, peak };
+  }
+}
+
+let gridPromise: Promise<BearGrid> | null = null;
+
+export function loadBearGrid(): Promise<BearGrid> {
+  gridPromise ??= (async () => {
+    const meta = await fetchJson<BearGridMeta>(`${BASE_URL}bears/density.json`, { timeoutMs: 20_000 });
+    const res = await fetchSafe(`${BASE_URL}bears/density.bin`, { timeoutMs: 30_000 });
+    const data = new Uint8Array(await res.arrayBuffer());
+    if (data.length !== meta.width * meta.height) throw new Error('Bear grid size mismatch');
+    return new BearGrid(meta, data);
+  })().catch((e) => {
+    gridPromise = null;
+    throw e;
+  });
+  return gridPromise;
+}
+
+// ------------------------------------------------------------------ modifiers
+
+/**
+ * Relative bear activity by month in the Romanian Carpathians: denning
+ * Dec–Mar (with more winter activity in recent years), spring emergence,
+ * summer, then the autumn feeding peak (Aug–Oct) when most conflicts happen.
+ */
+const SEASON = [0.25, 0.3, 0.6, 0.9, 1.0, 1.0, 1.0, 1.1, 1.25, 1.25, 0.8, 0.35];
+
+export function seasonFactor(d: Date): number {
+  return SEASON[d.getMonth()];
+}
+
+/** Sun elevation in degrees (NOAA approximation, good to ~1°). */
+export function sunElevation(d: Date, lng: number, lat: number): number {
+  const rad = Math.PI / 180;
+  const jd = d.getTime() / 86_400_000 + 2440587.5;
+  const n = jd - 2451545.0;
+  const L = (280.46 + 0.9856474 * n) % 360;
+  const g = ((357.528 + 0.9856003 * n) % 360) * rad;
+  const lambda = (L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * rad;
+  const eps = (23.439 - 0.0000004 * n) * rad;
+  const decl = Math.asin(Math.sin(eps) * Math.sin(lambda));
+  const ra = Math.atan2(Math.cos(eps) * Math.sin(lambda), Math.cos(lambda));
+  const gmst = (18.697374558 + 24.06570982441908 * n) % 24;
+  const ha = ((gmst * 15 + lng) * rad - ra) % (2 * Math.PI);
+  const el = Math.asin(Math.sin(lat * rad) * Math.sin(decl) + Math.cos(lat * rad) * Math.cos(decl) * Math.cos(ha));
+  return el / rad;
+}
+
+export type LightPhase = 'day' | 'twilight' | 'night';
+
+export function lightPhase(d: Date, lng: number, lat: number): LightPhase {
+  const el = sunElevation(d, lng, lat);
+  return el > 6 ? 'day' : el > -6 ? 'twilight' : 'night';
+}
+
+/** Bears are most active at dawn and dusk; at night they also enter villages. */
+const LIGHT: Record<LightPhase, number> = { day: 0.8, twilight: 1.5, night: 1.3 };
+
+/** Quiet, fast travel (MTB) surprises bears most; engines warn them off. */
+const MODE: Record<string, number> = { foot: 1.0, bike: 1.3, moto: 0.7 };
+
+// ------------------------------------------------------------------ live sightings
+
+export interface Sighting {
+  lng: number;
+  lat: number;
+  /** Days since the sighting. */
+  ageDays: number;
+  /** True when the location is randomised within a 0.2° cell (iNaturalist geoprivacy). */
+  obscured: boolean;
+  /** Metres, when known. */
+  accuracy?: number;
+}
+
+/** Chance that a sighting's true location lies within `radiusKm` of the user. */
+export function chanceWithin(s: Sighting, lng: number, lat: number, radiusKm: number): number {
+  const kx = 111.32 * Math.cos((lat * Math.PI) / 180);
+  if (!s.obscured) {
+    const d = Math.hypot((s.lng - lng) * kx, (s.lat - lat) * 111.32);
+    const acc = Math.max(0.05, (s.accuracy ?? 100) / 1000);
+    // Soft edge over the location accuracy.
+    return Math.max(0, Math.min(1, (radiusKm + acc - d) / (2 * acc)));
+  }
+  // Obscured: uniform over its 0.2° × 0.2° cell. Sample the cell on a grid.
+  const c = 0.2;
+  const x0 = Math.floor(s.lng / c) * c;
+  const y0 = Math.floor(s.lat / c) * c;
+  const N = 24;
+  let hit = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const px = x0 + ((i + 0.5) / N) * c;
+      const py = y0 + ((j + 0.5) / N) * c;
+      if (Math.hypot((px - lng) * kx, (py - lat) * 111.32) <= radiusKm) hit++;
+    }
+  }
+  // A small radius can fall between sample points: use the area ratio as a floor.
+  const areaRatio = Math.min(1, (Math.PI * radiusKm * radiusKm) / (c * kx * c * 111.32));
+  const inCell = lng >= x0 && lng < x0 + c && lat >= y0 && lat < y0 + c;
+  return Math.max(hit / (N * N), inCell ? areaRatio : 0);
+}
+
+/** Expected number of recent sightings inside the radius, discounted by age (half-weight at ~10 days). */
+export function recentSightings(list: Sighting[], lng: number, lat: number, radiusKm: number): number {
+  let n = 0;
+  for (const s of list) n += chanceWithin(s, lng, lat, radiusKm) * Math.exp(-s.ageDays / 14);
+  return n;
+}
+
+const INAT = 'https://api.inaturalist.org/v1/observations';
+
+/** Bear observations from the last 30 days within ~35 km (iNaturalist, CORS-enabled, no key). */
+export async function fetchSightings(lng: number, lat: number, signal?: AbortSignal, now = new Date()): Promise<Sighting[]> {
+  const d1 = new Date(now.getTime() - 30 * 86_400_000).toISOString().slice(0, 10);
+  const params = new URLSearchParams({
+    taxon_id: '41641', // Ursus arctos
+    lat: String(lat),
+    lng: String(lng),
+    radius: '35',
+    d1,
+    captive: 'false',
+    per_page: '200',
+    order_by: 'observed_on',
+  });
+  type Obs = { location?: string; obscured?: boolean; positional_accuracy?: number | null; time_observed_at?: string | null; observed_on?: string | null };
+  const r = await fetchJson<{ results: Obs[] }>(`${INAT}?${params}`, { signal, timeoutMs: 12_000, retries: 1 });
+  const out: Sighting[] = [];
+  for (const o of r.results) {
+    if (!o.location) continue;
+    const [la, lo] = o.location.split(',').map(Number);
+    const t = Date.parse(o.time_observed_at ?? o.observed_on ?? '');
+    if (!Number.isFinite(la) || !Number.isFinite(lo) || !Number.isFinite(t)) continue;
+    out.push({ lng: lo, lat: la, ageDays: Math.max(0, (now.getTime() - t) / 86_400_000), obscured: !!o.obscured, accuracy: o.positional_accuracy ?? undefined });
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ index
+
+/** Densities mapped to 1 and 100: 1 bear per 500 km² … 1.5 bears per km² (log scale). */
+const D_LOW = 0.002;
+const D_HIGH = 1.5;
+
+export function riskIndex(effectiveDensity: number): number {
+  if (!(effectiveDensity > 0)) return 1;
+  const t = (Math.log10(effectiveDensity) - Math.log10(D_LOW)) / (Math.log10(D_HIGH) - Math.log10(D_LOW));
+  return Math.max(1, Math.min(100, Math.round(1 + 99 * t)));
+}
+
+export type RiskLevel = 'low' | 'moderate' | 'high' | 'very-high';
+
+export function riskLevel(index: number): RiskLevel {
+  return index >= 70 ? 'very-high' : index >= 45 ? 'high' : index >= 20 ? 'moderate' : 'low';
+}
+
+export const RISK_LABEL: Record<RiskLevel, string> = { low: 'Low', moderate: 'Moderate', high: 'High', 'very-high': 'Very high' };
+
+export interface RiskInput {
+  lng: number;
+  lat: number;
+  when?: Date;
+  mode?: string;
+  sightings?: Sighting[];
+}
+
+export interface RadiusRisk {
+  index: number;
+  level: RiskLevel;
+  /** Bears per km² from the census-based grid (before season/time). */
+  density: number;
+  /** Expected bears living within the radius (census-based). */
+  bears: number;
+  /** Expected recent sightings within the radius. */
+  recent: number;
+}
+
+export interface BearRisk {
+  r10: RadiusRisk;
+  r1: RadiusRisk;
+  season: number;
+  light: LightPhase;
+  modeFactor: number;
+  liveData: boolean;
+}
+
+export function assessBearRisk(grid: BearGrid, input: RiskInput): BearRisk {
+  const when = input.when ?? new Date();
+  const season = seasonFactor(when);
+  const light = lightPhase(when, input.lng, input.lat);
+  const modeFactor = MODE[input.mode ?? 'foot'] ?? 1;
+  const base = season * LIGHT[light] * modeFactor;
+  const at = (radiusKm: number): RadiusRisk => {
+    const a = grid.area(input.lng, input.lat, radiusKm);
+    // For 1 km, the busiest nearby cell matters (a ravine or forest edge next to you).
+    const density = radiusKm <= 1 ? 0.5 * a.density + 0.5 * a.peak : a.density;
+    const recent = input.sightings ? recentSightings(input.sightings, input.lng, input.lat, radiusKm) : 0;
+    // A confirmed recent bear nearby raises the risk; capped so it can't dominate the census.
+    const boost = Math.min(3, 1 + 0.6 * recent);
+    const index = riskIndex(density * base * boost);
+    return { index, level: riskLevel(index), density, bears: a.bears, recent };
+  };
+  return { r10: at(10), r1: at(1), season, light, modeFactor, liveData: !!input.sightings };
+}
+
+export const BEAR_SAFETY_TIPS = [
+  'Make noise on the trail, especially in dense forest, near streams and on blind bends.',
+  'Avoid dawn, dusk and night in the forest — bears are most active then.',
+  'Never approach or feed a bear, and never come between a mother and cubs.',
+  'Keep food and rubbish sealed; don’t leave it at camp or near huts.',
+  'If you meet a bear: stay calm, don’t run, speak firmly and back away slowly.',
+  'Carry bear spray where allowed and know how to use it. In an emergency call 112.',
+];
