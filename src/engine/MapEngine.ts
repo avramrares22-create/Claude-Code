@@ -389,7 +389,13 @@ export class MapEngine {
     const ac = (this.trailAbort = new AbortController());
     const b = this.map.getBounds();
     this.emit('trails:loading', {});
-    const { failed } = await this.trails.ensure([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], ac.signal);
+    let failed = 0;
+    try {
+      ({ failed } = await this.trails.ensure([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], ac.signal));
+    } catch (e) {
+      if (ac.signal.aborted) return; // superseded by a newer view
+      throw e;
+    }
     if (ac.signal.aborted) return;
     this.emit('trails:loaded', { trails: this.trails.trails.length, pois: this.trails.pois.length, failedCells: failed });
   }

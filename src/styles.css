@@ -184,6 +184,123 @@ input:focus-visible {
   padding: 12px;
 }
 
+/* search results: a result row with its own directions button, staggered entrance */
+.results li.res {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  animation: res-in 0.32s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  animation-delay: calc(var(--i, 0) * 28ms);
+}
+
+.results li.res .res-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.results .res-text {
+  min-width: 0;
+}
+
+.results .res-text .name,
+.results .res-text .detail {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.results .detail em {
+  font-style: normal;
+  opacity: 0.7;
+}
+
+.results li button.res-go {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--accent);
+  background: rgba(255, 138, 31, 0.12);
+}
+
+.results li button.res-go:active {
+  transform: scale(0.92);
+}
+
+.results li.res-h {
+  padding: 10px 12px 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.results li.chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 6px 6px 8px;
+  scrollbar-width: none;
+}
+
+.results li.chips::-webkit-scrollbar {
+  display: none;
+}
+
+.results li.chips button.chip {
+  flex: none;
+  width: auto;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 13.5px;
+  font-weight: 600;
+  transition: background 0.2s, color 0.2s, transform 0.15s;
+}
+
+.results li.chips button.chip.on {
+  background: var(--accent);
+  color: #1b1206;
+  border-color: transparent;
+}
+
+.results li.chips button.chip:active {
+  transform: scale(0.95);
+}
+
+@keyframes res-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.place-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-right: 38px;
+}
+
+.place-ico {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: rgba(255, 138, 31, 0.14);
+  color: var(--accent);
+}
+
+.place-head h2 {
+  margin-right: 0;
+}
+
 .progress {
   height: 3px;
   margin: 6px 6px 0;
@@ -1126,4 +1243,37 @@ body.navigating .sheet {
 .br-note {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* route sheet header: Start is always visible, even when the sheet is half open */
+.route-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-right: 38px;
+}
+
+.route-head .rh-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.route-head h2 {
+  margin-right: 0;
+  color: var(--good);
+}
+
+.rh-dist {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.start-btn {
+  flex: none;
+  height: 46px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font-size: 16px;
+  box-shadow: 0 6px 18px rgba(255, 138, 31, 0.35);
 }

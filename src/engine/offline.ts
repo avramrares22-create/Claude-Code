@@ -183,7 +183,7 @@ async function pool<T>(items: T[], n: number, fn: (t: T) => Promise<void>, tick:
 export async function downloadPack(plan: OfflinePlan, deps: DownloadDeps, progress: Progress, signal?: AbortSignal): Promise<{ failed: number; area: OfflineArea }> {
   if (areaTooLarge(plan)) throw new Error('Area too large — zoom in a little, or download a ready-made pack');
   const cache = await caches.open(OFFLINE_CACHE);
-  const total = planSize(plan) + 4;
+  const total = planSize(plan) + 6;
   const lv = plan.pack.levels;
   const area: OfflineArea = {
     id: plan.pack.id,
@@ -202,10 +202,15 @@ export async function downloadPack(plan: OfflinePlan, deps: DownloadDeps, progre
   let failed = 0;
 
   // App data needed offline regardless of area.
-  for (const f of ['trails/meta.json', 's2/meta.json', 'scenes.json']) {
+  for (const f of ['trails/meta.json', 's2/meta.json', 'scenes.json', 'search/meta.json', 'search/core.json']) {
     await store(cache, dataUrl(f), signal).catch(() => failed++);
     tick('Preparing')();
   }
+  // Search: street names and trail outlines for the pack's 1° cells (404 = none there).
+  const [w, s_, e, n] = plan.pack.bbox;
+  for (let x = Math.floor(w); x <= Math.floor(e); x++)
+    for (let y = Math.floor(s_); y <= Math.floor(n); y++)
+      for (const kind of ['streets', 'routes']) await store(cache, dataUrl(`search/${kind}/${x}_${y}.json`), signal).catch(() => undefined);
   const tj = await fetchJson<{ tiles: string[] }>(REFERENCE.tilejson, { signal }).catch(() => null);
   await store(cache, REFERENCE.tilejson, signal).catch(() => failed++);
   tick('Preparing')();

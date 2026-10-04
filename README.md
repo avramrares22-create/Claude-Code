@@ -17,6 +17,7 @@ Natura is an installable web app (PWA) for iOS and Linux, built on a custom map 
   - a heading-up 3D camera
   - spoken turn-by-turn directions
   - automatic rerouting when you leave the route
+- **AI search, offline.** It understands Romanian and English, ignores missing diacritics, and copes with typos and half-typed words. It knows place types ("lacul", "cabana", "waterfall") and phrases like "lângă X", "near me" or "unde e…". It covers about 240,000 named places, trails and streets across Romania, with Brașov first. See *Search model* below.
 - **Bear risk while navigating.** A corner panel shows a 1–100 bear risk for 10 km and 1 km around you. It updates every 30 s or every 150 m, and voice warns you when the risk right around you becomes very high. Tap it for details and safety tips. See *Bear risk model* below.
 - **Offline maps.** Download all of Romania (overview, zoom 6–12), a mountain range, a city, or just the area on screen. Satellite, terrain, labels, trails and routing then work with no signal. Downloads can be paused and resumed. Search falls back to places and trails stored on the phone.
 - **Made for the mountains:**
@@ -31,7 +32,7 @@ Everything runs on the phone. There are no API keys and no backend; static data 
 ```
 npm install
 npm run dev        # http://localhost:5173 (on your LAN too, so an iPhone can open it)
-npm test           # 103 unit tests
+npm test           # unit tests
 npm run build      # typecheck and production build in dist/
 ```
 
@@ -122,6 +123,22 @@ npm run routenet:collect && npm run routenet:build && npm run routenet:train
 - **The index** is logarithmic: 1 means fewer than 1 bear per 500 km², 100 means 1.5 bears per km² or more. Bands: low below 20, moderate 20–44, high 45–69, very high 70 or more.
 
 It is an encounter-likelihood estimate, not a probability of being attacked. No public geolocated attack records or live GPS-collar data exist for Romania, so neither is used. A low value never means "no bears".
+
+**Search model** (`src/engine/search/`, `ml/search/`, `scripts/search/`).
+
+- **Index:** a weekly gazetteer built from OpenStreetMap: 120k places plus 119k streets, with locality and county.
+- **QueryNet:** a fastText-style model (16,384 hashed n-gram buckets × 16 dimensions, int8, 350 KB). It labels each word as name, place type, "near", anchor, "me" or filler, and predicts the kind of place wanted. It was trained on 260k generated Romanian/English queries with typos and dropped diacritics.
+- **Ranking:** hand-set rules. A learned ranker (RankNet) was also trained, but it scored worse on real queries, so it isn't used.
+- **Results** on queries searched from Brașov. "Test" is 50 queries written before tuning and not used for it; the Brașov-heavy development set is 66 queries.
+
+  | | test top-1 | dev top-1 |
+  |---|---|---|
+  | QueryNet + rules (shipped) | **90%** | **94%** |
+  | rules only | 86% | 95% |
+  | QueryNet + RankNet | 60% | 83% |
+  | Photon, the online OSM search used before | 78% | 77% |
+
+- Online, Photon results are added when the offline index finds little, for example house numbers.
 
 ## Data pipeline (GitHub Actions)
 
