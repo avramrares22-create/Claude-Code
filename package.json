@@ -8,7 +8,12 @@
     "preview": "vite preview",
     "typecheck": "tsc",
     "test": "vitest run",
-    "icons": "node scripts/make-icons.mjs"
+    "icons": "node scripts/make-icons.mjs",
+    "predev": "node scripts/copy-ort.mjs",
+    "prebuild": "node scripts/copy-ort.mjs",
+    "routenet:collect": "NODE_USE_ENV_PROXY=1 tsx scripts/routenet/collect.ts",
+    "routenet:build": "NODE_USE_ENV_PROXY=1 tsx scripts/routenet/build.ts",
+    "routenet:train": "tsx scripts/routenet/train.ts"
   },
   "repository": {
     "type": "git",
@@ -23,12 +28,16 @@
   "homepage": "https://github.com/avramrares22-create/Claude-Code#readme",
   "dependencies": {
     "geotiff": "^3.0.5",
-    "maplibre-gl": "^6.12.0"
+    "maplibre-gl": "^6.12.0",
+    "onnxruntime-web": "^1.30.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
+    "@types/pngjs": "^6.0.5",
     "@types/proj4": "^2.5.6",
+    "pngjs": "^7.0.0",
     "proj4": "^2.22.0",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.2",
     "vitest": "^5.0.3"

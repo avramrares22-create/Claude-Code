@@ -15,11 +15,42 @@ import type { ImageryMode } from './imagery/renderTile';
 import { SceneIndex } from './imagery/sceneIndex';
 import { TrailGraph } from './routing/graph';
 import { DEFAULT_PREFS, findRoute, type Route, type RoutePreferences } from './routing/router';
+import { LearnedRouteModel, type RouteNetWeights } from './routing/routeNet';
+import type { RouteModel } from './routing/routeModel';
+import routeNetWeights from './routing/routenet.weights.json';
 import { buildBaseStyle, FONTS, hiresId } from './style';
 import { TerrariumElevation } from './terrain/elevation';
 import { TrailStore } from './trails/trailStore';
-import type { Trail, TrailKind } from './trails/types';
+import type { Access, Trail, TrailKind } from './trails/types';
 import { Discovery } from './detect/discovery';
+import { mergeDetections } from './detect/merge';
+
+/** Properties of a trail feature on the map (see TrailStore.trailsGeoJSON). */
+export interface TrailProps {
+  wayId: number;
+  kind: TrailKind;
+  name: string;
+  difficulty: number;
+  routes: string;
+  surface: string;
+  grade: number;
+  mtb: number;
+  foot: Access;
+  bike: Access;
+  moto: Access;
+  source: 'osm' | 'gps' | 'imagery';
+  confidence: number;
+  usage: string;
+  sources: string;
+}
+
+export interface DiscoveryResult {
+  found: number;
+  meters: number;
+  /** Detections per source, or the reason that source failed. */
+  gps: number | string;
+  imagery: number | string;
+}
 
 export interface EngineEvents {
   'imagery:index': { grids: number };
@@ -27,7 +58,7 @@ export interface EngineEvents {
   'imagery:hires': { provider: string | null };
   'trails:loading': Record<string, never>;
   'trails:loaded': { trails: number; pois: number; failedCells: number };
-  'trail:click': { wayId: number; name: string; kind: TrailKind; difficulty: number; routes: string; lngLat: [number, number] };
+  'trail:click': TrailProps & { lngLat: [number, number] };
   'poi:click': { id: number; kind: string; name: string; label: string; lngLat: [number, number] };
   'map:click': { lngLat: [number, number] };
 }
@@ -47,7 +78,9 @@ export class MapEngine {
   readonly trails = new TrailStore();
   readonly elevation = new TerrariumElevation();
   readonly discovery = new Discovery();
-  private gpsAreas = new Map<string, Trail[]>();
+  /** On-device routing model learned from real GPS trips in Romania. */
+  routeModel: RouteModel = new LearnedRouteModel(routeNetWeights as unknown as RouteNetWeights);
+  private detected = { gps: new Map<string, Trail[]>(), imagery: new Map<string, Trail[]>() };
   readonly ready: Promise<void>;
   readonly imageryStats = imageryStats;
   private sceneIndex: Promise<SceneIndex>;
@@ -257,8 +290,7 @@ export class MapEngine {
         const p = hit.properties as { id: number; kind: string; name: string; label: string };
         this.emit('poi:click', { ...p, lngLat });
       } else if (hit) {
-        const p = hit.properties as { wayId: number; name: string; kind: TrailKind; difficulty: number; routes: string };
-        this.emit('trail:click', { ...p, lngLat });
+        this.emit('trail:click', { ...(hit.properties as TrailProps), lngLat });
       } else {
         this.emit('map:click', { lngLat });
       }
@@ -333,7 +365,7 @@ export class MapEngine {
     this.map.setFilter('trails-detected-glow', ['all', f, ['==', ['get', 'kind'], 'detected']]);
   }
 
-  async planRoute(from: [number, number], to: [number, number], prefs: RoutePreferences = DEFAULT_PREFS): Promise<Route | null> {
+  async planRoute(from: [number, number], to: [number, number], prefs: Partial<RoutePreferences> = DEFAULT_PREFS): Promise<Route | null> {
     this.graph ??= new TrailGraph(this.trails.trails);
     // Elevation only around the two endpoints keeps DEM downloads bounded.
     const pad = 0.02;
@@ -349,7 +381,7 @@ export class MapEngine {
       // Too large or offline: route without slope (Tobler on flat ground).
     }
     this.graph.attachElevation(this.elevation);
-    const route = findRoute(this.graph, from, to, prefs);
+    const route = findRoute(this.graph, from, to, prefs, this.routeModel);
     this.showRoute(route);
     return route;
   }
@@ -364,20 +396,37 @@ export class MapEngine {
   }
 
   /**
-   * Finds trails people use but nobody mapped, around the centre of the view,
-   * from public GPS traces. Results are cached on the device for 30 days.
+   * Finds trails nobody mapped around the centre of the view, from two
+   * independent sources: public GPS traces (where people go) and TrailNet on
+   * the latest clear Sentinel-2 scene (what the ground shows). Agreeing
+   * detections are fused. Results are cached on the device for 30 days.
    */
-  async discoverHiddenTrails(signal?: AbortSignal): Promise<{ found: number; meters: number; cached: boolean }> {
+  async discoverHiddenTrails(signal?: AbortSignal): Promise<DiscoveryResult> {
     if (this.map.getZoom() < 12) throw new Error('Zoom in closer to scan for hidden trails');
     const b = this.map.getBounds();
     const view: BBox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     const box = Discovery.scanBox(view);
     // OSM must be loaded first so only *unmapped* corridors come back.
     await this.trails.ensure(box, signal);
-    const r = await this.discovery.scanGps(view, this.trails.osmWays(), signal);
-    this.gpsAreas.set(r.bbox.join(','), r.trails);
-    this.trails.setDetected('gps', [...this.gpsAreas.values()].flat());
-    return { found: r.trails.length, meters: Discovery.totalLength(r.trails), cached: r.cached };
+    const [gps, img] = await Promise.allSettled([
+      this.discovery.scanGps(view, this.trails.osmWays(), signal),
+      this.discovery.scanImagery(view, this.trails.osmWays()),
+    ]);
+    const key = box.join(',');
+    if (gps.status === 'fulfilled') this.detected.gps.set(key, gps.value.trails);
+    if (img.status === 'fulfilled') this.detected.imagery.set(key, img.value.trails);
+    const merged = mergeDetections([...this.detected.gps.values()].flat(), [...this.detected.imagery.values()].flat());
+    this.trails.setDetected('discovery', merged);
+    const here = mergeDetections(
+      gps.status === 'fulfilled' ? gps.value.trails : [],
+      img.status === 'fulfilled' ? img.value.trails : [],
+    );
+    return {
+      found: here.length,
+      meters: Discovery.totalLength(here),
+      gps: gps.status === 'fulfilled' ? gps.value.trails.length : (gps.reason as Error).message,
+      imagery: img.status === 'fulfilled' ? img.value.trails.length : (img.reason as Error).message,
+    };
   }
 
   flyTo(lngLat: [number, number], zoom = 14) {

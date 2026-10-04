@@ -8,6 +8,7 @@
 import { ROMANIA_BBOX, STAC, type BBox } from '../config';
 import { bboxIntersects } from '../geo/mercator';
 import { searchScenes, type Scene } from './stac';
+import { dataUrl } from '../util/base';
 
 const CACHE_KEY = 'nature-engine:scene-index:v1';
 const CACHE_TTL_MS = 12 * 3600 * 1000;
@@ -65,10 +66,29 @@ export class SceneIndex {
   static async load(signal?: AbortSignal): Promise<SceneIndex> {
     const cached = readCache();
     if (cached) return new SceneIndex(cached);
+    // Snapshot published daily by CI: one small static file instead of paging STAC.
+    const snap = await loadSnapshot(signal);
+    if (snap) {
+      writeCache(snap);
+      return new SceneIndex(snap);
+    }
     const from = new Date(Date.now() - STAC.lookbackDays * 86_400_000);
     const scenes = await searchScenes({ bbox: ROMANIA_BBOX, from, maxCloud: STAC.maxCloudCover, signal });
     writeCache(scenes);
     return new SceneIndex(scenes);
+  }
+}
+
+const SNAPSHOT_MAX_AGE_MS = 3 * 86_400_000;
+
+async function loadSnapshot(signal?: AbortSignal): Promise<Scene[] | null> {
+  try {
+    const res = await fetch(dataUrl('scenes.json'), { signal });
+    if (!res.ok) return null;
+    const { generated, scenes } = (await res.json()) as { generated: string; scenes: Scene[] };
+    return Date.now() - Date.parse(generated) < SNAPSHOT_MAX_AGE_MS && scenes.length ? scenes : null;
+  } catch {
+    return null;
   }
 }
 

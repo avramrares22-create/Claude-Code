@@ -54,6 +54,11 @@ export interface RasterWindow {
   bands: number;
   /** Optional per-pixel cloud mask for this scene. */
   mask?: MaskWindow;
+  /**
+   * Pixels whose every band is ≤ this count as nodata. 0 for lossless data;
+   * JPEG-compressed previews smear their nodata edges into near-black.
+   */
+  nodataMax?: number;
 }
 
 /**
@@ -188,12 +193,13 @@ export function buildNdviLut(): Uint8Array {
  */
 function sample(win: RasterWindow, sx: number, sy: number, out: Float64Array): boolean {
   const { data, width, height, bands } = win;
+  const nodataMax = win.nodataMax ?? 0;
   const ix = Math.floor(sx);
   const iy = Math.floor(sy);
   const isValid = (x: number, y: number) => {
     if (x < 0 || y < 0 || x >= width || y >= height) return false;
     const o = (y * width + x) * bands;
-    for (let b = 0; b < bands; b++) if (data[o + b] !== 0) return true;
+    for (let b = 0; b < bands; b++) if (data[o + b] > nodataMax) return true;
     return false;
   };
   if (isValid(ix, iy) && isValid(ix + 1, iy) && isValid(ix, iy + 1) && isValid(ix + 1, iy + 1)) {

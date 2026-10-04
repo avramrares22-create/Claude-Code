@@ -118,6 +118,8 @@ export async function searchScenes(opts: SearchOptions): Promise<Scene[]> {
 }
 
 export interface SceneFiles extends SceneAssets {
+  blue: string;
+  green: string;
   /** 343 px, 320 m/px RGB COG — one tiny read covers a whole grid square at low zoom. */
   preview: string;
 }
@@ -138,6 +140,8 @@ export function deriveSceneFiles(id: string): SceneFiles | null {
     red: `${dir}/B04.tif`,
     nir: `${dir}/B08.tif`,
     scl: `${dir}/SCL.tif`,
+    blue: `${dir}/B02.tif`,
+    green: `${dir}/B03.tif`,
     preview: `${dir}/L2A_PVI.tif`,
   };
 }

@@ -94,3 +94,36 @@ describe('travel modes', () => {
     expect(findRoute(g, [25, 45], [25.01, 45], { mode: 'bike', maxMtbScale: 5 })).not.toBeNull();
   });
 });
+
+describe('RouteNet (learned)', async () => {
+  const weights = (await import('../src/engine/routing/routenet.weights.json')).default as unknown as import('../src/engine/routing/routeNet').RouteNetWeights;
+  const { LearnedRouteModel } = await import('../src/engine/routing/routeNet');
+  const net = new LearnedRouteModel(weights);
+  const marked = classifyWay({ type: 'way', id: 1, nodes: [1, 2], geometry: [{ lon: 25, lat: 45 }, { lon: 25.01, lat: 45 }], tags: { highway: 'path', sac_scale: 'mountain_hiking' } }, [{ id: 9 }]);
+  const kmh = (v: number) => v * 3.6;
+
+  it('ships at least the foot model, validated on held-out regions', () => {
+    expect(weights.modes.foot).toBeDefined();
+    const ev = weights.eval!.foot as { routenet: { maeLog: number }; expert: { maeLog: number } };
+    expect(ev.routenet.maeLog).toBeLessThan(ev.expert.maeLog);
+  });
+
+  it('predicts plausible hiking speeds', () => {
+    expect(kmh(net.speed('foot', marked, 0))).toBeGreaterThan(2);
+    expect(kmh(net.speed('foot', marked, 0))).toBeLessThan(7);
+    expect(net.speed('foot', marked, 0.25)).toBeLessThan(net.speed('foot', marked, 0));
+  });
+
+  it('stays within its clamp around the expert model and keeps A* admissible', () => {
+    for (const s of [-0.4, -0.1, 0, 0.1, 0.3]) {
+      const ratio = net.speed('foot', marked, s) / expertModel.speed('foot', marked, s);
+      expect(ratio).toBeGreaterThanOrEqual(Math.exp(weights.clamp[0]) - 1e-9);
+      expect(ratio).toBeLessThanOrEqual(Math.exp(weights.clamp[1]) + 1e-9);
+      expect(net.speed('foot', marked, s)).toBeLessThanOrEqual(net.maxSpeed('foot'));
+    }
+  });
+
+  it('falls back to the expert model for modes without enough data', () => {
+    if (!weights.modes.moto) expect(net.speed('moto', marked, 0)).toBe(expertModel.speed('moto', marked, 0));
+  });
+});

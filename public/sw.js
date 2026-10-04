@@ -10,8 +10,11 @@ const ASSETS = 'nature-assets-v1';
 const KEEP = [SHELL, ASSETS, 'nature-engine-tiles-v1'];
 const ASSET_LIMIT = 4000;
 
+// Works under any base path (e.g. /Claude-Code/ on GitHub Pages).
+const ROOT = new URL(self.registration.scope).pathname;
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(SHELL).then((c) => c.addAll(['/', '/manifest.webmanifest'])).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(SHELL).then((c) => c.addAll([ROOT, ROOT + 'manifest.webmanifest'])).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
@@ -30,27 +33,30 @@ const CACHE_FIRST = [
   /^https:\/\/geoportal\.ancpi\.ro\/maps\/rest\/services\/Ortofoto\//,
 ];
 
+// Pre-built data (trail cells, mosaic) changes daily/weekly: serve cached, refresh behind.
+const isData = (url) => url.pathname.startsWith(ROOT + 'data/');
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || req.headers.has('range')) return;
   const url = new URL(req.url);
 
   if (url.origin === self.location.origin) {
-    event.respondWith(staleWhileRevalidate(req));
+    event.respondWith(staleWhileRevalidate(req, isData(url) ? ASSETS : SHELL));
   } else if (CACHE_FIRST.some((re) => re.test(req.url))) {
     event.respondWith(cacheFirst(req));
   }
 });
 
-async function staleWhileRevalidate(req) {
-  const cache = await caches.open(SHELL);
+async function staleWhileRevalidate(req, cacheName) {
+  const cache = await caches.open(cacheName);
   const hit = await cache.match(req, { ignoreSearch: req.mode === 'navigate' });
   const net = fetch(req)
     .then((res) => {
       if (res.ok) cache.put(req, res.clone());
       return res;
     })
-    .catch(async () => (req.mode === 'navigate' ? await cache.match('/') : undefined) ?? Response.error());
+    .catch(async () => (req.mode === 'navigate' ? await cache.match(ROOT) : undefined) ?? Response.error());
   return hit || net;
 }
 

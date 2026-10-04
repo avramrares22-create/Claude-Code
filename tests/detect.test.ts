@@ -119,3 +119,37 @@ describe('raster toolkit', () => {
     expect(Math.abs(lat - 45.005)).toBeLessThan(0.0001);
   });
 });
+
+describe('merging detections', () => {
+  const mk = (id: number, coords: Array<[number, number]>, source: 'gps' | 'imagery', confidence: number) =>
+    ({ wayId: id, nodeIds: coords.map((_, i) => -id * 100 - i), coords, kind: 'detected', hiddenScore: 1, difficulty: 0,
+      surfaceClass: 'unknown', trackGrade: 0, mtbScale: -1, access: { foot: 'yes', bike: 'unknown', moto: 'no' },
+      routes: [], source, confidence, tags: { highway: 'path' } }) as import('../src/engine/trails/types').Trail;
+
+  it('fuses agreeing corridors and keeps independent ones', async () => {
+    const { mergeDetections } = await import('../src/engine/detect/merge');
+    const gps = [mk(1, [[25, 45], [25.01, 45]], 'gps', 0.6)];
+    const same = mk(2, [[25.0005, 45.0001], [25.0098, 45.0001]], 'imagery', 0.5); // ~11 m away
+    const other = mk(3, [[25, 45.01], [25.01, 45.01]], 'imagery', 0.5); // ~1.1 km away
+    const out = mergeDetections(gps, [same, other]);
+    expect(out).toHaveLength(2);
+    expect(out[0].confidence).toBeCloseTo(0.8, 5);
+    expect(out[0].tags['detected:sources']).toBe('gps;imagery');
+    expect(out[1].wayId).toBe(3);
+  });
+});
+
+describe('hysteresis', () => {
+  it('grows strong seeds through weak cells but drops weak-only blobs', async () => {
+    const { hysteresis } = await import('../src/engine/detect/raster');
+    // Row 1: strong seed then a weak tail. Row 4: weak only.
+    const w = 8, h = 6;
+    const s = new Float32Array(w * h);
+    s[1 * w + 1] = 0.9;
+    for (let x = 2; x < 7; x++) s[1 * w + x] = 0.3;
+    for (let x = 1; x < 7; x++) s[4 * w + x] = 0.3;
+    const m = hysteresis(s, w, h, 0.25, 0.5);
+    expect([...m.slice(w, 2 * w)].reduce((a, v) => a + v, 0)).toBe(6);
+    expect([...m.slice(4 * w, 5 * w)].reduce((a, v) => a + v, 0)).toBe(0);
+  });
+});

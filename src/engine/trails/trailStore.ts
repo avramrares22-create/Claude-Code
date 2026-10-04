@@ -7,10 +7,34 @@ import { tileBBox, tilesInBBox } from '../geo/mercator';
 import { kvGet, kvSet } from '../util/kvStore';
 import { classifyPoi, classifyWay, routeFromRelation } from './classify';
 import { fetchOverpass } from './overpass';
+import { decodeCell, type TrailCellV1 } from './cellFormat';
+import { dataUrl } from '../util/base';
 import type * as GeoJSON from 'geojson';
 import type { OsmElement, OsmNode, OsmRelation, OsmWay, Poi, Trail, TrailKind, TrailRoute } from './types';
 
-export type Loader = (bbox: BBox, signal?: AbortSignal) => Promise<OsmElement[]>;
+export type Loader = (bbox: BBox, signal?: AbortSignal, cell?: [number, number, number]) => Promise<OsmElement[]>;
+
+let staticMeta: Promise<boolean> | null = null;
+/** Whether the CI-built Romania trail cells are published next to the app. */
+function hasStaticCells(): Promise<boolean> {
+  staticMeta ??= fetch(dataUrl('trails/meta.json'))
+    .then((r) => r.ok)
+    .catch(() => false);
+  return staticMeta;
+}
+
+/**
+ * Default loader: the pre-built static cell (fast, reliable, whole-country),
+ * falling back to live Overpass when the app runs without published data.
+ */
+export const defaultLoader: Loader = async (bbox, signal, cell) => {
+  if (cell && (await hasStaticCells())) {
+    const res = await fetch(dataUrl(`trails/${cell[0]}/${cell[1]}/${cell[2]}.json`), { signal });
+    if (res.ok) return decodeCell((await res.json()) as TrailCellV1);
+    if (res.status === 404) return []; // no trails in this cell (e.g. outside Romania)
+  }
+  return fetchOverpass(bbox, signal);
+};
 
 const CELL_TTL = 7 * 86_400_000;
 const MAX_CELLS_PER_VIEW = 16;
@@ -35,7 +59,7 @@ export class TrailStore {
   private detected = new Map<string, Trail[]>();
 
   constructor(
-    private loader: Loader = fetchOverpass,
+    private loader: Loader = defaultLoader,
     private useCache = true,
   ) {}
 
@@ -61,7 +85,7 @@ export class TrailStore {
       p = (async () => {
         let els = this.useCache ? await kvGet<OsmElement[]>(key, CELL_TTL) : null;
         if (!els) {
-          els = await this.loader(tileBBox(z, x, y), signal);
+          els = await this.loader(tileBBox(z, x, y), signal, [z, x, y]);
           if (this.useCache) void kvSet(key, els);
         }
         this.ingest(els);
@@ -146,6 +170,8 @@ export class TrailStore {
           moto: t.access.moto,
           source: t.source,
           confidence: t.confidence,
+          usage: t.tags['detected:usage'] ?? '',
+          sources: t.tags['detected:sources'] ?? t.source,
         },
       })),
     };

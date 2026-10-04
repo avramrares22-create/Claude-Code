@@ -9,7 +9,10 @@ import { kvGet, kvSet } from '../util/kvStore';
 import type { DetectReply, DetectRequest } from './detect.worker';
 import { fetchTraces } from './gps';
 
+type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
+
 const CACHE_TTL = 30 * 86_400_000;
+const BASE = import.meta.env.BASE_URL;
 /** Largest area scanned at once (the OSM API caps trackpoint boxes at 0.25 deg²). */
 const MAX_SPAN = 0.08;
 
@@ -18,7 +21,7 @@ export class Discovery {
   private nextId = 1;
   private pending = new Map<number, (r: DetectReply) => void>();
 
-  private run(req: Omit<DetectRequest, 'id'>): Promise<Trail[]> {
+  private run(req: DistributiveOmit<DetectRequest, 'id'>): Promise<Trail[]> {
     if (!this.worker) {
       this.worker = new Worker(new URL('./detect.worker.ts', import.meta.url), { type: 'module' });
       this.worker.onmessage = (ev: MessageEvent<DetectReply>) => {
@@ -48,13 +51,26 @@ export class Discovery {
     const cached = await kvGet<Trail[]>(key, CACHE_TTL);
     if (cached) return { bbox, trails: cached, cached: true };
     const traces = await fetchTraces(bbox, 12, signal);
-    // Only ways that can matter for this box (keeps the worker message small).
-    const pad = 0.002;
-    const local: OsmWay[] = [];
-    for (const w of ways) {
-      if (w.geometry.some((p) => p.lon > bbox[0] - pad && p.lon < bbox[2] + pad && p.lat > bbox[1] - pad && p.lat < bbox[3] + pad)) local.push(w);
-    }
-    const trails = await this.run({ type: 'gps', bbox, traces, ways: local });
+    const trails = await this.run({ type: 'gps', bbox, traces, ways: localWays(ways, bbox) });
+    void kvSet(key, trails);
+    return { bbox, trails, cached: false };
+  }
+
+  /** TrailNet on the latest clear Sentinel-2 scene for the area. */
+  async scanImagery(view: BBox, ways: Iterable<OsmWay>): Promise<{ bbox: BBox; trails: Trail[]; cached: boolean }> {
+    const bbox = Discovery.scanBox(view);
+    const key = `imagery-detect:v1:${bbox.join(',')}`;
+    const cached = await kvGet<Trail[]>(key, CACHE_TTL);
+    if (cached) return { bbox, trails: cached, cached: true };
+    const meta = (await (await fetch(`${BASE}models/trailnet.json`)).json()) as { threshold: number };
+    const origin = self.location.origin;
+    const trails = await this.run({
+      type: 'imagery',
+      bbox,
+      ways: localWays(ways, bbox),
+      threshold: meta.threshold,
+      cfg: { modelUrl: `${origin}${BASE}models/trailnet.onnx`, wasmBase: `${origin}${BASE}ort/` },
+    });
     void kvSet(key, trails);
     return { bbox, trails, cached: false };
   }
@@ -64,4 +80,13 @@ export class Discovery {
     for (const t of trails) for (let k = 1; k < t.coords.length; k++) m += haversine(...t.coords[k - 1], ...t.coords[k]);
     return m;
   }
+}
+
+/** Only ways that can matter for this box (keeps the worker message small). */
+function localWays(ways: Iterable<OsmWay>, bbox: BBox, pad = 0.002): OsmWay[] {
+  const out: OsmWay[] = [];
+  for (const w of ways) {
+    if (w.geometry.some((p) => p.lon > bbox[0] - pad && p.lon < bbox[2] + pad && p.lat > bbox[1] - pad && p.lat < bbox[3] + pad)) out.push(w);
+  }
+  return out;
 }

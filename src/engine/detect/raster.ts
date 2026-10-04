@@ -261,3 +261,35 @@ export function simplify(pts: Array<[number, number]>, tol: number): Array<[numb
   }
   return pts.filter((_, i) => keep[i]);
 }
+
+/**
+ * Hysteresis threshold (as in Canny): cells ≥ hi seed a line, which then grows
+ * through 8-connected cells ≥ lo. Keeps long faint corridors whole without
+ * admitting isolated weak noise.
+ */
+export function hysteresis(score: ArrayLike<number>, w: number, h: number, lo: number, hi: number, allow?: Uint8Array): Uint8Array {
+  const out = new Uint8Array(w * h);
+  const stack: number[] = [];
+  for (let i = 0; i < w * h; i++) {
+    if (score[i] >= hi && (!allow || allow[i]) && !out[i]) {
+      out[i] = 1;
+      stack.push(i);
+      while (stack.length) {
+        const c = stack.pop()!;
+        const x = c % w, y = (c - x) / w;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const j = ny * w + nx;
+            if (!out[j] && score[j] >= lo && (!allow || allow[j])) {
+              out[j] = 1;
+              stack.push(j);
+            }
+          }
+        }
+      }
+    }
+  }
+  return out;
+}

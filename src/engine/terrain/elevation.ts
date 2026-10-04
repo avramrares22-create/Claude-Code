@@ -27,18 +27,29 @@ export class TerrariumElevation implements ElevationProvider {
     private url = TERRAIN.tiles,
   ) {}
 
+  /** Loads DEM tiles for bbox, dropping to coarser zooms for big areas (bike/moto routes). */
   async prepare(bbox: BBox): Promise<void> {
-    const tiles = tilesInBBox(bbox, this.zoom);
-    if (tiles.length > 64) throw new Error('Area too large for elevation sampling');
-    await Promise.all(tiles.map(([z, x, y]) => this.load(z, x, y)));
+    let z = this.zoom;
+    let tiles = tilesInBBox(bbox, z);
+    while (tiles.length > 64 && z > 8) tiles = tilesInBBox(bbox, --z);
+    await Promise.all(tiles.map(([tz, x, y]) => this.load(tz, x, y)));
   }
 
   get(lng: number, lat: number): number | null {
-    const fx = lngToTileX(lng, this.zoom);
-    const fy = latToTileY(lat, this.zoom);
+    // Finest loaded zoom wins.
+    for (let z = this.zoom; z >= 8; z--) {
+      const v = this.sample(z, lng, lat);
+      if (v !== null) return v;
+    }
+    return null;
+  }
+
+  private sample(z: number, lng: number, lat: number): number | null {
+    const fx = lngToTileX(lng, z);
+    const fy = latToTileY(lat, z);
     const tx = Math.floor(fx);
     const ty = Math.floor(fy);
-    const tile = this.ready.get(`${tx}/${ty}`);
+    const tile = this.ready.get(`${z}/${tx}/${ty}`);
     if (!tile) return null;
     // Bilinear within the tile (edges clamp; fine at ~30 m sampling).
     const s = tile.size;
@@ -52,7 +63,7 @@ export class TerrariumElevation implements ElevationProvider {
   }
 
   private load(z: number, x: number, y: number): Promise<Tile | null> {
-    const key = `${x}/${y}`;
+    const key = `${z}/${x}/${y}`;
     let p = this.tiles.get(key);
     if (!p) {
       p = fetchTile(this.url.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)))

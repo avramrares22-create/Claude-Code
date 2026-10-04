@@ -22,7 +22,7 @@ export const IMAGERY = {
   /** Sentinel-2 is 10 m/px; z14 is ~6.6 m/px at Romania's latitude, beyond that MapLibre overzooms. */
   maxZoom: 14,
   /** Bump to invalidate every cached rendered tile after a renderer change. */
-  rendererVersion: 2,
+  rendererVersion: 3,
 } as const;
 
 /** Mapzen/AWS Terrarium DEM — public, CORS enabled, no key. */
