@@ -9,7 +9,10 @@ import {
   planSize,
   removeOfflineArea,
   RouteFollower,
+  announce,
+  buildManeuvers,
   type GpxPoint,
+  type TurnType,
   type ImageryMode,
   type Route,
   type RoutePreferences,
@@ -151,6 +154,29 @@ let busyScans = 0;
 const setBusy = () => progressEl.classList.toggle('on', busyScans > 0 || !engine.map.areTilesLoaded());
 engine.map.on('dataloading', setBusy);
 engine.map.on('idle', setBusy);
+
+// AI alignment runs by itself when zoomed in; keep the user informed, quietly.
+let alignToast: (() => void) | null = null;
+engine.on('align:start', () => {
+  alignToast?.();
+  alignToast = toast('Scanning this area with AI…', { ms: 0, key: 'align' });
+});
+engine.on('align:done', ({ aligned, detected }) => {
+  alignToast?.();
+  alignToast = null;
+  if (aligned || detected) {
+    const parts = [aligned ? `${aligned} trail${aligned > 1 ? 's' : ''} aligned` : '', detected ? `${detected} hidden found` : ''].filter(Boolean);
+    toast(`AI: ${parts.join(' · ')}`, { kind: 'success', ms: 2500, key: 'align' });
+  }
+});
+try {
+  const off = localStorage.getItem('natura:align') === 'off';
+  engine.autoAlign = !off;
+  engine.trails.useAlignment = !off;
+  engine.autoScan = localStorage.getItem('natura:autoscan') !== 'off';
+} catch {
+  // ignore
+}
 
 engine.on('imagery:error', ({ message }) => toast(`Satellite imagery unavailable: ${message}`, { kind: 'warn', ms: 5000 }));
 engine.on('trails:loaded', ({ failedCells }) => {
@@ -304,6 +330,10 @@ function layersSheet() {
        ${kindChip('marked', '#d7263d')}${kindChip('path', '#f3e6c4')}${kindChip('track', '#d9a55b')}
        ${kindChip('road', '#e8e8e8')}${kindChip('hidden', '#ff5fc8')}${kindChip('detected', '#35e0ff')}
      </div>
+     <div class="row"><div><div class="label">Auto-scan for hidden trails</div><div class="hint">Every minute and whenever you settle on an area (GPS traces + satellite AI)</div></div>
+       <label class="switch"><input id="sw-autoscan" type="checkbox" ${engine.autoScan ? 'checked' : ''}><span></span></label></div>
+     <div class="row"><div><div class="label">AI trail alignment</div><div class="hint">When zoomed in, TrailNet moves trails onto the path visible in satellite imagery</div></div>
+       <label class="switch"><input id="sw-align" type="checkbox" ${engine.autoAlign ? 'checked' : ''}><span></span></label></div>
      <h3>Terrain</h3>
      <div class="row"><div><div class="label">3D terrain</div><div class="hint">Tilt with two fingers</div></div>
        <label class="switch"><input id="sw-3d" type="checkbox" ${terrainOn ? 'checked' : ''}><span></span></label></div>`,
@@ -326,6 +356,27 @@ function layersSheet() {
     }),
   );
   q<HTMLInputElement>('#sw-3d')!.addEventListener('change', () => fab3d.click());
+  q<HTMLInputElement>('#sw-autoscan')!.addEventListener('change', (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    engine.autoScan = on;
+    try {
+      localStorage.setItem('natura:autoscan', on ? 'on' : 'off');
+    } catch {
+      // ignore
+    }
+    if (on) void engine.alignView();
+  });
+  q<HTMLInputElement>('#sw-align')!.addEventListener('change', (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    engine.autoAlign = on;
+    engine.trails.setUseAlignment(on);
+    try {
+      localStorage.setItem('natura:align', on ? 'on' : 'off');
+    } catch {
+      // ignore
+    }
+    if (on) void engine.alignView();
+  });
 }
 $('tab-layers').addEventListener('click', () => (sheetOwner === 'layers' ? sheet.close() : layersSheet()));
 
@@ -349,7 +400,7 @@ engine.on('poi:click', (p) => {
   openSheet(
     'info',
     `<h2>${esc(p.label || p.kind)}</h2><div class="sub">${esc(p.kind.replace('_', ' '))}</div>
-     <div class="btns"><button class="btn primary" id="go-here">${icons.route(18)} Route here</button></div>`,
+     <div class="btns"><button class="btn primary" id="go-here">${icons.route(18)} Directions</button></div>`,
   );
   q('#go-here')!.addEventListener('click', () => routeTo(p.lngLat));
 });
@@ -369,6 +420,7 @@ function showTrailInfo(t: TrailProps & { lngLat: [number, number] }) {
     t.mtb >= 0 ? `<span class="chip">MTB S${t.mtb}</span>` : '',
     t.surface && t.surface !== 'unknown' ? `<span class="chip">${esc(t.surface)}</span>` : '',
     t.grade ? `<span class="chip">Grade ${t.grade}</span>` : '',
+    t.aligned ? `<span class="chip detected">AI-aligned · moved ${t.aligned} m</span>` : '',
   ].join('');
   const detected =
     t.kind === 'detected'
@@ -387,25 +439,47 @@ function showTrailInfo(t: TrailProps & { lngLat: [number, number] }) {
        <span class="chip ${access(t.moto)}">${icons.moto(14)} ${accessTxt(t.moto)}</span>
      </div>
      ${detected}
-     <div class="btns"><button class="btn primary" id="go-here">${icons.route(18)} Route here</button></div>`,
+     <div class="btns"><button class="btn primary" id="go-here">${icons.route(18)} Directions</button></div>`,
   );
   q('#go-here')!.addEventListener('click', () => routeTo(t.lngLat));
 }
 
-/** Route from the user's position (or ask for a start) to a point. */
-function routeTo(dest: [number, number]) {
+/** Waits briefly for a GPS fix (starting the watch if needed). */
+function currentFix(timeoutMs = 8000): Promise<Fix | null> {
+  if (location.last && Date.now() - location.last.time < 60_000) return Promise.resolve(location.last);
+  return new Promise((resolve) => {
+    let done = false;
+    const unsub = location.subscribe((f) => {
+      if (done) return;
+      done = true;
+      showUser(f);
+      setTimeout(unsub, 0);
+      resolve(f);
+    });
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      unsub();
+      resolve(null);
+    }, timeoutMs);
+  });
+}
+
+/** Directions from the user's position to a point (asks for a start if there is no GPS fix). */
+async function routeTo(dest: [number, number]) {
   startRouting();
-  const here = location.last;
+  routing.to = dest;
+  addMarker(dest, '#d7263d');
+  openSheet('route', `<h2>Directions</h2>${modeSeg()}<div class="sub">Finding your position…</div>`);
+  bindModeSeg();
+  const here = await currentFix();
+  if (!routing.active || routing.to !== dest) return;
   if (here) {
     routing.from = [here.lng, here.lat];
     addMarker(routing.from, '#2e9e44');
-    routing.to = dest;
-    addMarker(dest, '#d7263d');
-    void computeRoute();
+    await computeRoute();
   } else {
-    routing.to = dest;
-    addMarker(dest, '#d7263d');
-    routePrompt('Tap your start point on the map.');
+    routePrompt('No GPS fix yet — tap your start point on the map.');
   }
 }
 
@@ -441,7 +515,7 @@ $('tab-scan').addEventListener('click', async () => {
         `<h3>Result</h3><div class="stats" style="grid-template-columns:repeat(2,1fr)">
            <div class="stat"><b>${r.found}</b><small>unmapped trails</small></div>
            <div class="stat"><b>${fmtKm(r.meters)}</b><small>total length</small></div></div>
-         <div class="meta">${part(r.gps, 'GPS traces')} · ${part(r.imagery, 'satellite imagery')}. Detected trails are drawn in <span style="color:var(--detected)">cyan</span> — tap one for details.</div>`,
+         <div class="meta">${part(r.gps, 'GPS traces')} · ${part(r.imagery, 'satellite imagery')}${r.aligned ? ` · ${r.aligned} mapped trails AI-aligned to the imagery` : ''}. Detected trails are drawn in <span style="color:var(--detected)">cyan</span> — tap one for details.</div>`,
       );
     }
     toast(r.found ? `Found ${r.found} unmapped trails (${fmtKm(r.meters)})` : 'No unmapped trails here', { kind: r.found ? 'success' : 'info' });
@@ -606,7 +680,7 @@ function renderRouteSheet(route: Route | null) {
        </div>
        <div id="profile"></div>
        ${warn}
-       <div class="btns"><button class="btn primary" id="nav-start">${icons.compass(18)} Navigate</button><button class="btn" id="route-gpx">Save GPX</button></div>
+       <div class="btns"><button class="btn primary" id="nav-start">${icons.compass(18)} Start</button><button class="btn" id="route-gpx">Save GPX</button></div>
        ${options}`,
     );
     const pd = profileData(route.coords, route.elevations);
@@ -625,7 +699,7 @@ function renderRouteSheet(route: Route | null) {
         } else scrubMarker.setLngLat(pt);
       });
     }
-    q('#nav-start')!.addEventListener('click', () => startNavigation(route.coords, route.elevations, route.duration));
+    q('#nav-start')!.addEventListener('click', () => startNavigation(route));
     q('#route-gpx')!.addEventListener('click', () =>
       shareGpx(`Natura ${route.mode} route ${new Date().toLocaleDateString()}`, route.coords.map(([lng, lat], i) => ({ lng, lat, ele: route.elevations[i] }))),
     );
@@ -650,44 +724,169 @@ function renderRouteSheet(route: Route | null) {
   bind('pref-strict', (el) => ({ strictAccess: el.checked }));
 }
 
-// ================================================================== navigation
+// ================================================================== navigation (turn-by-turn)
 
 let navActive = false;
 let navUnsub: (() => void) | null = null;
+let navFollow = true;
+let voiceOn = (() => {
+  try {
+    return localStorage.getItem('natura:voice') !== 'off';
+  } catch {
+    return true;
+  }
+})();
 const hud = $('nav-hud');
+const navBar = document.createElement('div');
+navBar.className = 'nav-bar glass';
+navBar.hidden = true;
+document.body.append(navBar);
+const recenterBtn = document.createElement('button');
+recenterBtn.className = 'recenter glass';
+recenterBtn.hidden = true;
+recenterBtn.innerHTML = `${icons.compass(18)} Recenter`;
+document.body.append(recenterBtn);
+recenterBtn.addEventListener('click', () => {
+  navFollow = true;
+  recenterBtn.hidden = true;
+});
+engine.map.on('dragstart', () => {
+  if (!navActive) return;
+  navFollow = false;
+  recenterBtn.hidden = false;
+});
 
-function startNavigation(coords: Array<[number, number]>, elevations: number[], duration: number) {
+const ARROW: Record<TurnType, string> = {
+  depart: 'M12 20V5M6 11l6-6 6 6',
+  straight: 'M12 20V5M6 11l6-6 6 6',
+  'slight-left': 'M15 20v-6a4 4 0 0 0-1.2-2.8L8 5.5M8 11V5.5h5.5',
+  'slight-right': 'M9 20v-6a4 4 0 0 1 1.2-2.8L16 5.5M16 11V5.5h-5.5',
+  left: 'M17 20v-7a4 4 0 0 0-4-4H5M10 4 5 9l5 5',
+  right: 'M7 20v-7a4 4 0 0 1 4-4h8M14 4l5 5-5 5',
+  'sharp-left': 'M16 20V8a3 3 0 0 0-5.1-2.1L5 12M5 6v6h6',
+  'sharp-right': 'M8 20V8a3 3 0 0 1 5.1-2.1L19 12M19 6v6h-6',
+  uturn: 'M8 20V9a5 5 0 0 1 10 0v4M14 9l4 4 4-4',
+  arrive: 'M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21ZM12 7v5',
+};
+const arrowSvg = (t: TurnType, size = 46) =>
+  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="${ARROW[t]}"/></svg>`;
+
+function speak(text: string) {
+  if (!voiceOn || !('speechSynthesis' in window)) return;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-GB';
+    u.rate = 1.02;
+    speechSynthesis.speak(u);
+  } catch {
+    // speech unavailable
+  }
+}
+
+const fmtClock = (secondsFromNow: number) => new Date(Date.now() + secondsFromNow * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const fmtDist = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.max(10, Math.round(m / 10) * 10)} m`);
+
+function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'> & { segments?: Route['segments'] }) {
   stopNavigation(false);
+  const { coords, elevations, duration } = route;
   const follower = new RouteFollower(coords, elevations, duration);
+  const maneuvers = buildManeuvers(coords, route.segments ?? coords.slice(1).map(() => ({ wayId: 0, kind: 'path' })));
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + haversine(...coords[i - 1], ...coords[i]));
+  const spokenStage = new Map<number, number>(); // maneuver index → last announced stage (2 far, 1 near, 0 now)
   navActive = true;
+  navFollow = true;
+  engine.scanFocus = coords[0];
   document.body.classList.add('navigating');
   sheet.close();
-  routing.active = false; // keep the drawn route, stop tap-to-route
-  engine.showRoute({ coords } as Route);
+  routing.active = false;
+  engine.showRoute({ coords });
   void wake.acquire();
-  let warned = false;
   hud.hidden = false;
-  hud.innerHTML = `<div class="big">Waiting for GPS…</div>`;
+  navBar.hidden = false;
+  hud.className = 'nav-hud glass';
+  hud.innerHTML = `<div class="turn"><span class="turn-ico">${arrowSvg('depart')}</span><div><div class="turn-dist">Waiting for GPS…</div><div class="turn-text">${esc(maneuvers[0]?.text ?? '')}</div></div></div>`;
+  speak(maneuvers[0] ? `${maneuvers[0].spoken}.` : 'Starting navigation');
+  let lastBearing = engine.map.getBearing();
+  let warned = false;
+  const dest = coords[coords.length - 1];
+
   navUnsub = location.subscribe((f) => {
     showUser(f);
+    engine.scanFocus = [f.lng, f.lat];
     const s = follower.update(f.lng, f.lat, f.accuracy);
+    // Segment index of the snapped position, for the grey "done" part.
+    let seg = 0;
+    while (seg < cum.length - 2 && cum[seg + 1] < s.along) seg++;
+    engine.setRouteProgress(coords, seg, s.snapped);
+
+    const next = maneuvers.find((m) => m.along > s.along + 3) ?? maneuvers[maneuvers.length - 1];
+    const after = maneuvers[maneuvers.indexOf(next) + 1];
+    const toNext = Math.max(0, next.along - s.along);
     hud.classList.toggle('off-route', s.offRoute);
-    hud.innerHTML = `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
-        <div><div class="big">${fmtKm(s.remaining)}</div>
-          <div class="row2"><span>${fmtTime(s.remainingTime)} left</span><span>↑${Math.round(s.climbLeft)} m to climb</span></div>
-          ${s.offRoute ? `<div class="row2" style="color:var(--bad)">Off route — ${Math.round(s.offset)} m away</div>` : ''}</div>
-        <div class="btns" style="margin:0;flex-direction:column">
-          ${s.offRoute ? `<button class="btn primary" id="nav-reroute">Reroute</button>` : ''}
-          <button class="btn" id="nav-stop">End</button></div></div>`;
-    hud.querySelector('#nav-stop')!.addEventListener('click', () => stopNavigation(true));
-    hud.querySelector('#nav-reroute')?.addEventListener('click', () => reroute(f, coords[coords.length - 1]));
-    engine.map.easeTo({ center: [f.lng, f.lat], zoom: Math.max(engine.map.getZoom(), 15), duration: 600 });
+    hud.innerHTML = s.offRoute
+      ? `<div class="turn"><span class="turn-ico">${arrowSvg('uturn')}</span><div><div class="turn-dist">Off route</div><div class="turn-text">${Math.round(s.offset)} m from the trail</div></div>
+         <button class="btn primary" id="nav-reroute">Reroute</button></div>`
+      : `<div class="turn"><span class="turn-ico">${arrowSvg(next.type)}</span><div><div class="turn-dist">${fmtDist(toNext)}</div><div class="turn-text">${esc(next.text)}</div></div></div>
+         ${after && after.along - next.along < 400 ? `<div class="then">Then ${arrowSvg(after.type, 18)} ${esc(after.text.replace(/ onto| on/, ''))}</div>` : ''}`;
+    hud.querySelector('#nav-reroute')?.addEventListener('click', () => void reroute(f, dest));
+
+    navBar.innerHTML = `<div class="nb-main"><b>${fmtTime(s.remainingTime)}</b><span>${fmtDist(s.remaining)} · arrive ${fmtClock(s.remainingTime)}${s.climbLeft > 20 ? ` · ↑${Math.round(s.climbLeft)} m` : ''}</span></div>
+      <button class="nb-btn" id="nav-voice" aria-label="Voice">${voiceOn ? '🔊' : '🔇'}</button>
+      <button class="btn" id="nav-stop">End</button>`;
+    navBar.querySelector('#nav-stop')!.addEventListener('click', () => stopNavigation(true));
+    navBar.querySelector('#nav-voice')!.addEventListener('click', () => {
+      voiceOn = !voiceOn;
+      try {
+        localStorage.setItem('natura:voice', voiceOn ? 'on' : 'off');
+      } catch {
+        // ignore
+      }
+      if (!voiceOn) speechSynthesis?.cancel();
+    });
+
+    // Voice: far (~250 m), near (~60 m), now (<20 m) — each once per maneuver.
+    const k = maneuvers.indexOf(next);
+    const stage = toNext < 20 ? 0 : toNext < 70 ? 1 : toNext < 300 ? 2 : 3;
+    const prev = spokenStage.get(k) ?? 4;
+    if (!s.offRoute && stage < prev && stage < 3 && next.type !== 'depart') {
+      spokenStage.set(k, stage);
+      speak(announce(next, toNext));
+    }
+
+    // Camera: heading-up, tilted, user low on screen — like car navigation.
+    if (navFollow) {
+      const ahead = (() => {
+        const target = s.along + 40;
+        let i = seg;
+        while (i < cum.length - 1 && cum[i] < target) i++;
+        return coords[Math.min(coords.length - 1, i)];
+      })();
+      const kx = Math.cos((f.lat * Math.PI) / 180);
+      let b = (Math.atan2((ahead[0] - s.snapped[0]) * kx, ahead[1] - s.snapped[1]) * 180) / Math.PI;
+      // Smooth the heading to avoid jitter from GPS noise.
+      const diff = ((b - lastBearing + 540) % 360) - 180;
+      b = lastBearing + diff * 0.5;
+      lastBearing = b;
+      engine.map.easeTo({
+        center: [f.lng, f.lat],
+        bearing: b,
+        pitch: 55,
+        zoom: Math.max(16, Math.min(17.5, engine.map.getZoom())),
+        padding: { top: window.innerHeight * 0.35, bottom: 120, left: 0, right: 0 },
+        duration: 900,
+        easing: (t) => t,
+      });
+    }
+
     if (s.offRoute && !warned) {
       warned = true;
-      toast('You left the route', { kind: 'warn', action: { label: 'Reroute', run: () => reroute(f, coords[coords.length - 1]) } });
+      speak('You are off route. Tap reroute to find a way back.');
     }
     if (!s.offRoute) warned = false;
     if (s.arrived) {
+      speak('You have arrived at your destination.');
       toast('You have arrived 🎉', { kind: 'success', ms: 5000 });
       stopNavigation(true);
     }
@@ -695,9 +894,11 @@ function startNavigation(coords: Array<[number, number]>, elevations: number[], 
 }
 
 async function reroute(f: Fix, dest: [number, number]) {
+  toast('Finding a new route…', { key: 'reroute', ms: 1500 });
   const route = await engine.planRoute([f.lng, f.lat], dest, routing.prefs).catch(() => null);
   if (!route) return toast('No route back to the trail network from here', { kind: 'error' });
-  startNavigation(route.coords, route.elevations, route.duration);
+  speak('Route updated.');
+  startNavigation(route);
 }
 
 function stopNavigation(clear: boolean) {
@@ -705,8 +906,12 @@ function stopNavigation(clear: boolean) {
   navUnsub = null;
   if (!navActive) return;
   navActive = false;
+  engine.scanFocus = null;
   hud.hidden = true;
+  navBar.hidden = true;
+  recenterBtn.hidden = true;
   document.body.classList.remove('navigating');
+  engine.map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
   if (!recording) void wake.release();
   if (clear) resetRouting();
 }
@@ -833,7 +1038,7 @@ fileInput.addEventListener('change', async () => {
       const lo = (k: 0 | 1, fn: (...v: number[]) => number) => fn(...coords.map((c) => c[k]));
       await engine.elevation.prepare([lo(0, Math.min), lo(1, Math.min), lo(0, Math.max), lo(1, Math.max)]).catch(() => {});
       const elev = longest.map((p) => p.ele ?? engine.elevation.get(p.lng, p.lat) ?? NaN);
-      startNavigation(coords, elev, (dist / 1.1) * (routing.prefs.mode === 'foot' ? 1 : 0.3));
+      startNavigation({ coords, elevations: elev, duration: (dist / 1.1) * (routing.prefs.mode === 'foot' ? 1 : 0.3) });
     });
     q('#imp-clear')!.addEventListener('click', () => {
       engine.setLine('imported', null);
@@ -986,7 +1191,7 @@ function pointSheet(lngLat: [number, number]) {
   openSheet(
     'info',
     `<h2>Dropped pin</h2><div class="sub">${coord}${ele !== null ? ` · ${Math.round(ele)} m` : ''}</div>
-     <div class="btns"><button class="btn primary" id="pt-to">${icons.route(18)} Route here</button><button class="btn" id="pt-from">Start here</button></div>
+     <div class="btns"><button class="btn primary" id="pt-to">${icons.route(18)} Directions</button><button class="btn" id="pt-from">Start here</button></div>
      <button class="btn block" id="pt-copy">Copy coordinates</button>`,
   );
   if (ele === null) {

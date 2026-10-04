@@ -89,3 +89,130 @@ export class RouteFollower {
     };
   }
 }
+
+// ------------------------------------------------------------------ turn-by-turn
+
+export type TurnType =
+  | 'depart'
+  | 'straight'
+  | 'slight-left'
+  | 'slight-right'
+  | 'left'
+  | 'right'
+  | 'sharp-left'
+  | 'sharp-right'
+  | 'uturn'
+  | 'arrive';
+
+export interface Maneuver {
+  /** Vertex index on the route where the maneuver happens. */
+  index: number;
+  /** Metres from the start of the route. */
+  along: number;
+  type: TurnType;
+  /** Human instruction, e.g. "Turn left onto the red stripe trail". */
+  text: string;
+  /** Short spoken form without the distance prefix. */
+  spoken: string;
+}
+
+export interface SegmentLike {
+  wayId: number;
+  name?: string;
+  kind: string;
+  marking?: string;
+}
+
+const KIND_NAME: Record<string, string> = {
+  marked: 'the marked trail',
+  path: 'the path',
+  track: 'the forest track',
+  road: 'the road',
+  hidden: 'the hidden trail',
+  detected: 'the unmapped trail',
+};
+
+export function legName(s: SegmentLike): string {
+  if (s.marking) return `the ${s.marking} trail`;
+  if (s.name) return s.name;
+  return KIND_NAME[s.kind] ?? 'the trail';
+}
+
+const bearing = (a: [number, number], b: [number, number]) => {
+  const kx = Math.cos((a[1] * Math.PI) / 180);
+  return (Math.atan2((b[0] - a[0]) * kx, b[1] - a[1]) * 180) / Math.PI;
+};
+
+function turnType(delta: number): TurnType {
+  const a = Math.abs(delta);
+  const side = delta < 0 ? 'left' : 'right';
+  if (a < 22) return 'straight';
+  if (a < 50) return `slight-${side}` as TurnType;
+  if (a < 125) return side as TurnType;
+  if (a < 165) return `sharp-${side}` as TurnType;
+  return 'uturn';
+}
+
+const VERB: Record<TurnType, string> = {
+  depart: 'Head out on',
+  straight: 'Continue onto',
+  'slight-left': 'Keep left onto',
+  'slight-right': 'Keep right onto',
+  left: 'Turn left onto',
+  right: 'Turn right onto',
+  'sharp-left': 'Turn sharp left onto',
+  'sharp-right': 'Turn sharp right onto',
+  uturn: 'Turn around onto',
+  arrive: 'Arrive at your destination',
+};
+
+/**
+ * Builds maneuvers where the route changes trail. Turn angles are measured
+ * ~25 m before and after the junction so zig-zags in the geometry don't count.
+ * OSM splits of the same named trail going straight on are merged away.
+ */
+export function buildManeuvers(coords: Array<[number, number]>, segments: SegmentLike[]): Maneuver[] {
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + haversine(...coords[i - 1], ...coords[i]));
+  const pointAt = (m: number): [number, number] => {
+    const t = Math.max(0, Math.min(cum[cum.length - 1], m));
+    let i = 0;
+    while (i < cum.length - 2 && cum[i + 1] < t) i++;
+    const f = (t - cum[i]) / Math.max(1e-9, cum[i + 1] - cum[i]);
+    return [coords[i][0] + (coords[i + 1][0] - coords[i][0]) * f, coords[i][1] + (coords[i + 1][1] - coords[i][1]) * f];
+  };
+  const out: Maneuver[] = [];
+  if (!segments.length) return out;
+  const first = legName(segments[0]);
+  out.push({ index: 0, along: 0, type: 'depart', text: `${VERB.depart} ${first}`, spoken: `${VERB.depart} ${first}` });
+  let curName = first;
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i].wayId === segments[i - 1].wayId) continue;
+    const name = legName(segments[i]);
+    const at = cum[i];
+    const delta = ((bearing(pointAt(at), pointAt(at + 25)) - bearing(pointAt(at - 25), pointAt(at)) + 540) % 360) - 180;
+    const type = turnType(delta);
+    // Same trail bending gently at a junction is not a decision point.
+    if ((type === 'straight' || type.startsWith('slight')) && name === curName) continue;
+    curName = name;
+    const text = `${VERB[type]} ${name}`;
+    out.push({ index: i, along: at, type, text, spoken: text });
+  }
+  out.push({ index: coords.length - 1, along: cum[cum.length - 1], type: 'arrive', text: VERB.arrive, spoken: VERB.arrive });
+  // Merge maneuvers closer than 15 m (junction clusters): keep the later, more specific one.
+  return out.filter((m, k) => k === out.length - 1 || k === 0 || out[k + 1].along - m.along > 15);
+}
+
+/** Distance-based announcement: "In 120 m, turn left onto …". */
+export function announce(m: Maneuver, metres: number): string {
+  if (m.type === 'arrive') return metres < 30 ? 'You have arrived' : `In ${roundDist(metres)}, ${m.spoken.toLowerCase()}`;
+  if (metres < 25) return m.spoken;
+  const verb = m.spoken.charAt(0).toLowerCase() + m.spoken.slice(1);
+  return `In ${roundDist(metres)}, ${verb}`;
+}
+
+export function roundDist(m: number): string {
+  if (m >= 1000) return `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} kilometres`;
+  if (m >= 100) return `${Math.round(m / 50) * 50} metres`;
+  return `${Math.max(10, Math.round(m / 10) * 10)} metres`;
+}

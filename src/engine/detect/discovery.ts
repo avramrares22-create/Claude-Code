@@ -6,6 +6,7 @@ import type { BBox } from '../config';
 import { haversine } from '../geo/geodesy';
 import type { OsmWay, Trail } from '../trails/types';
 import { kvGet, kvSet } from '../util/kvStore';
+import type { Alignment } from './align';
 import type { DetectReply, DetectRequest } from './detect.worker';
 import { fetchTraces } from './gps';
 import { fetchJson } from '../util/net';
@@ -24,6 +25,10 @@ export class Discovery {
   private pending = new Map<number, (r: DetectReply) => void>();
 
   private run(req: DistributiveOmit<DetectRequest, 'id'>): Promise<Trail[]> {
+    return this.runFull(req).then((r) => r.trails ?? []);
+  }
+
+  private runFull(req: DistributiveOmit<DetectRequest, 'id'>): Promise<DetectReply> {
     if (!this.worker) {
       const w = new Worker(new URL('./detect.worker.ts', import.meta.url), { type: 'module' });
       w.onmessage = (ev: MessageEvent<DetectReply>) => {
@@ -47,7 +52,7 @@ export class Discovery {
       this.pending.set(id, (r) => {
         clearTimeout(timer);
         if (r.error) reject(new Error(r.error));
-        else resolve(r.trails ?? []);
+        else resolve(r);
       });
       this.worker!.postMessage({ ...req, id } as DetectRequest);
     });
@@ -80,23 +85,27 @@ export class Discovery {
     return { bbox, trails, cached: false };
   }
 
-  /** TrailNet on the latest clear Sentinel-2 scene for the area. */
-  async scanImagery(view: BBox, ways: Iterable<OsmWay>): Promise<{ bbox: BBox; trails: Trail[]; cached: boolean }> {
+  /**
+   * TrailNet on the latest clear Sentinel-2 scene for the area: finds unmapped
+   * trails and AI-aligns mapped ones onto what the imagery shows.
+   */
+  async scanImagery(view: BBox, ways: Iterable<OsmWay>): Promise<{ bbox: BBox; trails: Trail[]; aligned: Alignment[]; cached: boolean }> {
     const bbox = Discovery.scanBox(view);
-    const key = `imagery-detect:v1:${bbox.join(',')}`;
-    const cached = await kvGet<Trail[]>(key, CACHE_TTL);
-    if (cached) return { bbox, trails: cached, cached: true };
+    const key = `imagery-detect:v3:${bbox.join(',')}`;
+    const cached = await kvGet<{ trails: Trail[]; aligned: Alignment[] }>(key, CACHE_TTL);
+    if (cached) return { bbox, ...cached, cached: true };
     const meta = await fetchJson<{ threshold: number }>(`${BASE}models/trailnet.json`);
     const origin = self.location.origin;
-    const trails = await this.run({
+    const r = await this.runFull({
       type: 'imagery',
       bbox,
       ways: localWays(ways, bbox),
       threshold: meta.threshold,
       cfg: { modelUrl: `${origin}${BASE}models/trailnet.onnx`, wasmBase: `${origin}${BASE}ort/` },
     });
-    void kvSet(key, trails);
-    return { bbox, trails, cached: false };
+    const result = { trails: r.trails ?? [], aligned: r.aligned ?? [] };
+    void kvSet(key, result);
+    return { bbox, ...result, cached: false };
   }
 
   static totalLength(trails: Trail[]): number {

@@ -153,3 +153,52 @@ describe('hysteresis', () => {
     expect([...m.slice(4 * w, 5 * w)].reduce((a, v) => a + v, 0)).toBe(0);
   });
 });
+
+describe('AI trail alignment', async () => {
+  const { alignWays } = await import('../src/engine/detect/align');
+  const { lngLatToUtm } = await import('../src/engine/geo/utm');
+  // Synthetic 10 m probability raster in UTM 35 with a bright E–W ridge at a known northing.
+  const zone = { zone: 35, south: false };
+  const [e0, n0] = lngLatToUtm(25.0, 45.0, zone);
+  const res = 10, W = 200, H = 100;
+  const originX = Math.floor(e0 / 10) * 10 - 500, originY = Math.ceil(n0 / 10) * 10 + 500;
+  const ridgeN = n0 + 20; // the real trail is ~20 m north of the mapped line
+  const prob = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const n = originY - (y + 0.5) * res;
+    for (let x = 0; x < W; x++) prob[y * W + x] = Math.exp(-((n - ridgeN) ** 2) / (2 * 6 ** 2)) * 0.9;
+  }
+  const raster = { epsg: 32635, originX, originY, res, width: W, height: H, prob };
+  const mapped: import('../src/engine/trails/types').OsmWay = {
+    type: 'way', id: 1, nodes: [10, 11, 12, 13],
+    geometry: [{ lon: 24.998, lat: 45 }, { lon: 25.0, lat: 45 }, { lon: 25.002, lat: 45 }, { lon: 25.004, lat: 45 }],
+    tags: { highway: 'track' },
+  };
+
+  it('moves a misaligned way onto the imagery ridge, keeping vertex count', () => {
+    const [a] = alignWays(raster, [mapped]);
+    expect(a).toBeDefined();
+    expect(a.coords).toHaveLength(4);
+    expect(a.shift).toBeGreaterThan(14);
+    expect(a.shift).toBeLessThan(26);
+    // Interior vertices move ~20 m north (≈0.00018°); ends are anchored.
+    const dLat = (a.coords[1][1] - 45) * 110540;
+    expect(dLat).toBeGreaterThan(10);
+    expect(dLat).toBeLessThan(26);
+    expect(a.coords[0]).toEqual([24.998, 45]);
+    expect(a.coords[3]).toEqual([25.004, 45]);
+  });
+
+  it('leaves well-placed ways alone and needs consistent evidence', () => {
+    const onRidge = { ...mapped, geometry: mapped.geometry.map((g) => ({ ...g, lat: 45 + 20 / 110540 })) };
+    expect(alignWays(raster, [onRidge])).toHaveLength(0);
+    const flat = { ...raster, prob: new Float32Array(W * H) };
+    expect(alignWays(flat, [mapped])).toHaveLength(0);
+  });
+
+  it('keeps shared junctions fixed', () => {
+    const other = { ...mapped, id: 2, nodes: [99, 11, 98], geometry: [{ lon: 25.0, lat: 44.999 }, { lon: 25.0, lat: 45 }, { lon: 25.0, lat: 45.001 }] };
+    const [a] = alignWays(raster, [mapped, other]).filter((x) => x.wayId === 1);
+    expect(a.coords[1]).toEqual([25.0, 45]); // node 11 is a junction
+  });
+});

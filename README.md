@@ -10,6 +10,14 @@ Natura is an installable web app (PWA) for iOS and Linux, built on a custom map 
   - ANCPI national orthophoto when reachable
   - Esri World Imagery otherwise
 - **Every OSM path, track and rural road**, with Romanian trail markings (bandă, cruce, punct, triunghi), SAC and MTB grades, and 3D terrain.
+- **Made for the mountains:**
+  - offline areas (satellite, terrain, labels, trails)
+  - track recording with GPX export
+  - GPX import
+  - turn-by-turn route following with off-route warnings and one-tap reroute
+  - place search
+  - long-press any spot for its coordinates and elevation
+  - a dark UI built for one-handed use
 
 Everything runs on the phone. There are no API keys and no backend; static data is published by CI.
 
@@ -71,13 +79,19 @@ Scores on held-out regions are measured against OSM, so they understate real pre
 python ml/build_dataset.py && python ml/add_water.py && python ml/train_trailnet.py   # TRAILNET_HEADS=2 for the waterway experiment
 ```
 
-**RouteNet** (`src/engine/routing/routenet.weights.json`, 8 KB) has one small MLP per travel mode. Each predicts a log-speed correction to the expert model, from features of the way and the DEM slope. It was trained on 8,351 stretches of public GPS trips map-matched in 29 Romanian regions. Validation holds out whole regions:
+**RouteNet** (`src/engine/routing/routenet.weights.json`) has one small MLP per travel mode. Each predicts a log-speed correction to the expert model, from features of the way and the DEM slope.
 
-| mode | median time error, expert | median time error, RouteNet |
+- **Training data:** 21,668 stretches of public GPS trips, map-matched in 85 Romanian regions.
+- **Brașov focus:** 25 zones around Brașov (Tâmpa, Postăvarul, Piatra Mare, Pietrele lui Solomon, Cristian, Codlea, Zărnești, Predeal…) were collected densely, and rows within 40 km of Brașov count 3× in training.
+- **Validation:** whole regions are held out.
+
+| mode | all held-out regions: expert → RouteNet | Brașov held-out: expert → RouteNet |
 |------|------|------|
-| hike | 26.9% | **20.9%** |
-| bike | 39.9% | **38.3%** |
-| moto | expert rules only (too little data to beat them) | |
+| hike | 23.6% → **20.1%** | 20.3% → **19.3%** |
+| bike | 42.3% → **39.0%** | 43.1% → **41.2%** |
+| moto | 26.1% → **14.5%** | 27.6% → **13.8%** |
+
+The figures are median travel-time error.
 
 Retrain with:
 

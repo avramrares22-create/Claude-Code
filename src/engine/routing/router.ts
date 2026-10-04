@@ -53,6 +53,32 @@ export interface Route {
   unknownAccessShare: number;
   snapDistance: [number, number];
   model: string;
+  /** Per segment (coords[i]→coords[i+1]): the trail it follows, for turn-by-turn. */
+  segments: RouteSegmentInfo[];
+}
+
+export interface RouteSegmentInfo {
+  wayId: number;
+  name?: string;
+  kind: Trail['kind'];
+  /** e.g. "red stripe" for Romanian waymarks. */
+  marking?: string;
+}
+
+const COLOR_NAMES: Record<string, string> = {
+  '#d7263d': 'red', '#1f6fd1': 'blue', '#f2c418': 'yellow', '#2e9e44': 'green',
+  '#f5f5f5': 'white', '#222222': 'black', '#f28c18': 'orange', '#8e44ad': 'purple', '#8b5a2b': 'brown',
+};
+
+export function segmentInfo(t: Trail): RouteSegmentInfo {
+  const m = t.routes.find((r) => r.marking)?.marking;
+  const color = m ? COLOR_NAMES[m.color] : undefined;
+  return {
+    wayId: t.wayId,
+    name: t.name ?? t.routes[0]?.name,
+    kind: t.kind,
+    marking: color ? `${color} ${m!.shape === 'other' ? 'mark' : m!.shape}` : undefined,
+  };
 }
 
 function slopeOf(length: number, elevA: number, elevB: number): number {
@@ -191,6 +217,7 @@ export function findRoute(
 
   let distance = 0, ascent = 0, descent = 0, duration = 0, hiddenLen = 0, offroadLen = 0, unknownLen = 0;
   const wayIds: number[] = [];
+  const segments: RouteSegmentInfo[] = [];
   for (let i = 1; i < path.length; i++) {
     const pe = prevEdge[path[i]]!;
     const t = g.trails[pe.trail];
@@ -205,6 +232,7 @@ export function findRoute(
     if (t.surfaceClass !== 'paved') offroadLen += pe.length;
     if (t.access[mode] === 'unknown') unknownLen += pe.length;
     if (wayIds[wayIds.length - 1] !== t.wayId) wayIds.push(t.wayId);
+    segments.push(segmentInfo(t));
   }
   return {
     mode,
@@ -216,6 +244,7 @@ export function findRoute(
     descent,
     duration,
     wayIds,
+    segments,
     hiddenShare: distance > 0 ? hiddenLen / distance : 0,
     offroadShare: distance > 0 ? offroadLen / distance : 0,
     unknownAccessShare: distance > 0 ? unknownLen / distance : 0,

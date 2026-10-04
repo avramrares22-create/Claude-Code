@@ -43,11 +43,15 @@ export interface TrailProps {
   confidence: number;
   usage: string;
   sources: string;
+  /** AI alignment shift in metres (0 = untouched). */
+  aligned: number;
 }
 
 export interface DiscoveryResult {
   found: number;
   meters: number;
+  /** Mapped trails moved onto the imagery by AI alignment. */
+  aligned: number;
   /** Detections per source, or the reason that source failed. */
   gps: number | string;
   imagery: number | string;
@@ -62,11 +66,16 @@ export interface EngineEvents {
   'trail:click': TrailProps & { lngLat: [number, number] };
   'poi:click': { id: number; kind: string; name: string; label: string; lngLat: [number, number] };
   'map:click': { lngLat: [number, number] };
+  'align:start': Record<string, never>;
+  'align:done': { aligned: number; detected: number };
 }
 
 type Handler<K extends keyof EngineEvents> = (e: EngineEvents[K]) => void;
 
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+const AUTO_ALIGN_ZOOM = 14;
+const AUTO_SCAN_ZOOM = 12;
+const AUTO_SCAN_MS = 60_000;
 
 export interface EngineOptions {
   container: HTMLElement | string;
@@ -134,6 +143,8 @@ export class MapEngine {
         });
         this.bindInteractions();
         this.map.on('moveend', () => void this.loadTrailsForView());
+        this.map.on('idle', () => this.scheduleAutoAlign());
+        this.startAutoScan();
         void this.loadTrailsForView();
         resolve();
       });
@@ -158,6 +169,7 @@ export class MapEngine {
     m.addSource('trails', { type: 'geojson', data: EMPTY, promoteId: 'wayId' });
     m.addSource('pois', { type: 'geojson', data: EMPTY });
     m.addSource('route', { type: 'geojson', data: EMPTY });
+    m.addSource('route-done', { type: 'geojson', data: EMPTY });
     m.addSource('track', { type: 'geojson', data: EMPTY });
     m.addSource('imported', { type: 'geojson', data: EMPTY });
 
@@ -238,19 +250,54 @@ export class MapEngine {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#c38bff', 'line-width': width(3), 'line-dasharray': [1.5, 1] },
     });
+    // Already-travelled part of a route: muted grey.
+    m.addLayer({
+      id: 'route-done',
+      type: 'line',
+      source: 'route-done',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#8a948e', 'line-width': width(3.6), 'line-opacity': 0.85 },
+    });
+    // The way to follow: soft glow, white casing, bold orange, direction chevrons.
+    m.addLayer({
+      id: 'route-glow',
+      type: 'line',
+      source: 'route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ff7a00', 'line-width': width(10), 'line-blur': 6, 'line-opacity': 0.35 },
+    });
     m.addLayer({
       id: 'route-casing',
       type: 'line',
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffffff', 'line-width': width(5) },
+      paint: { 'line-color': '#ffffff', 'line-width': width(5.2) },
     });
     m.addLayer({
       id: 'route-line',
       type: 'line',
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ff7a00', 'line-width': width(3.2) },
+      paint: { 'line-color': '#ff7a00', 'line-width': width(3.6) },
+    });
+    m.addLayer({
+      id: 'route-arrows',
+      type: 'symbol',
+      source: 'route',
+      minzoom: 13,
+      layout: {
+        'symbol-placement': 'line',
+        'symbol-spacing': 70,
+        'text-field': '›',
+        'text-font': FONTS.FONT_BOLD,
+        'text-size': ['interpolate', ['linear'], ['zoom'], 13, 16, 18, 26],
+        'text-keep-upright': false,
+        'text-rotation-alignment': 'map',
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
+        'text-offset': [0, -0.08],
+      },
+      paint: { 'text-color': '#ffffff' },
     });
     m.addLayer({
       id: 'track-line',
@@ -405,13 +452,23 @@ export class MapEngine {
     return route;
   }
 
-  showRoute(route: Route | null) {
-    const src = this.map.getSource('route') as GeoJSONSource;
-    src.setData(
-      route
-        ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: route.coords } }] }
-        : EMPTY,
-    );
+  showRoute(route: Pick<Route, 'coords'> | null) {
+    const line = (c: Array<[number, number]>): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: c.length > 1 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: c } }] : [],
+    });
+    (this.map.getSource('route') as GeoJSONSource).setData(route ? line(route.coords) : EMPTY);
+    (this.map.getSource('route-done') as GeoJSONSource).setData(EMPTY);
+  }
+
+  /** While navigating: grey out the travelled part, keep the remaining way highlighted. */
+  setRouteProgress(coords: Array<[number, number]>, segIndex: number, snapped: [number, number]) {
+    const line = (c: Array<[number, number]>): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: c.length > 1 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: c } }] : [],
+    });
+    (this.map.getSource('route-done') as GeoJSONSource).setData(line([...coords.slice(0, segIndex + 1), snapped]));
+    (this.map.getSource('route') as GeoJSONSource).setData(line([snapped, ...coords.slice(segIndex + 1)]));
   }
 
   /**
@@ -445,7 +502,10 @@ export class MapEngine {
     ]);
     const key = box.join(',');
     if (gps.status === 'fulfilled') this.detected.gps.set(key, gps.value.trails);
-    if (img.status === 'fulfilled') this.detected.imagery.set(key, img.value.trails);
+    if (img.status === 'fulfilled') {
+      this.detected.imagery.set(key, img.value.trails);
+      this.trails.setAligned(img.value.aligned);
+    }
     const merged = mergeDetections([...this.detected.gps.values()].flat(), [...this.detected.imagery.values()].flat());
     this.trails.setDetected('discovery', merged);
     const here = mergeDetections(
@@ -455,6 +515,7 @@ export class MapEngine {
     return {
       found: here.length,
       meters: Discovery.totalLength(here),
+      aligned: img.status === 'fulfilled' ? img.value.aligned.length : 0,
       gps: gps.status === 'fulfilled' ? gps.value.trails.length : (gps.reason as Error).message,
       imagery: img.status === 'fulfilled' ? img.value.trails.length : (img.reason as Error).message,
     };
@@ -467,6 +528,74 @@ export class MapEngine {
       type: 'FeatureCollection',
       features: lines.filter((l) => l.length > 1).map((l) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: l } })),
     });
+  }
+
+  private alignTimer: ReturnType<typeof setTimeout> | undefined;
+  private alignDone = new Set<string>();
+  private aligning = false;
+  /** Automatic AI alignment when zoomed in (zoom ≥ AUTO_ALIGN_ZOOM). */
+  autoAlign = true;
+  /** Automatic hidden-trail scanning (on view settle + every AUTO_SCAN_MS). */
+  autoScan = true;
+  private autoScanTimer: ReturnType<typeof setInterval> | undefined;
+  /** Where to scan when not the view centre (e.g. the user's position while navigating). */
+  scanFocus: [number, number] | null = null;
+
+  private scheduleAutoAlign() {
+    clearTimeout(this.alignTimer);
+    if (this.aligning || this.map.getZoom() < AUTO_SCAN_ZOOM) return;
+    if (!this.autoScan && !(this.autoAlign && this.map.getZoom() >= AUTO_ALIGN_ZOOM)) return;
+    // Wait until the user settles on an area.
+    this.alignTimer = setTimeout(() => void this.alignView(), 1500);
+  }
+
+  /** Re-checks every minute so moving (or navigating) keeps finding trails. */
+  startAutoScan() {
+    clearInterval(this.autoScanTimer);
+    this.autoScanTimer = setInterval(() => {
+      if (!this.autoScan || document.visibilityState !== 'visible' || !navigator.onLine) return;
+      if (this.map.getZoom() < AUTO_SCAN_ZOOM && !this.scanFocus) return;
+      void this.alignView();
+    }, AUTO_SCAN_MS);
+  }
+
+  /**
+   * Runs TrailNet on the area in view: corrects mapped trail geometry to match
+   * the imagery and adds any unmapped trails it finds. Once per area (cached).
+   */
+  async alignView() {
+    const b = this.map.getBounds();
+    const f = this.scanFocus;
+    const span = 0.03;
+    const view: BBox = f ? [f[0] - span, f[1] - span, f[0] + span, f[1] + span] : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const box = Discovery.scanBox(view);
+    const key = box.join(',');
+    if (this.aligning || this.alignDone.has(key)) return;
+    this.aligning = true;
+    this.emit('align:start', {});
+    try {
+      await this.trails.ensure(box);
+      const ways = () => this.trails.osmWays();
+      // Imagery (alignment + TrailNet) always; GPS traces too when auto-scan is on.
+      const [img, gps] = await Promise.allSettled([
+        this.discovery.scanImagery(view, ways()),
+        this.autoScan ? this.discovery.scanGps(view, ways()) : Promise.reject(new Error('off')),
+      ]);
+      if (img.status === 'rejected' && gps.status === 'rejected') throw img.reason;
+      this.alignDone.add(key);
+      if (img.status === 'fulfilled') {
+        if (this.autoAlign) this.trails.setAligned(img.value.aligned);
+        this.detected.imagery.set(key, img.value.trails);
+      }
+      if (gps.status === 'fulfilled') this.detected.gps.set(key, gps.value.trails);
+      const here = mergeDetections(gps.status === 'fulfilled' ? gps.value.trails : [], img.status === 'fulfilled' ? img.value.trails : []);
+      this.trails.setDetected('discovery', mergeDetections([...this.detected.gps.values()].flat(), [...this.detected.imagery.values()].flat()));
+      this.emit('align:done', { aligned: img.status === 'fulfilled' && this.autoAlign ? img.value.aligned.length : 0, detected: here.length });
+    } catch {
+      // Offline or no clear scene: keep OSM geometry; try again next time the view settles.
+    } finally {
+      this.aligning = false;
+    }
   }
 
   /** Plans everything needed to use the current view offline. */

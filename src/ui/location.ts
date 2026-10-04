@@ -55,6 +55,8 @@ class Location {
         this.listeners.forEach((f) => f(this.last!));
       },
       (e) => {
+        // Brief dropouts (trees, canyons) are normal: only complain if we have had no fix for a while.
+        if (e.code !== e.PERMISSION_DENIED && this.last && Date.now() - this.last.time < 20_000) return;
         const msg =
           e.code === e.PERMISSION_DENIED
             ? 'Location permission denied — enable it in Settings › Privacy › Location Services'

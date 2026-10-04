@@ -61,3 +61,35 @@ describe('route following', () => {
     expect(f.update(25.0199, 45).arrived).toBe(true);
   });
 });
+
+describe('turn-by-turn maneuvers', async () => {
+  const { buildManeuvers, announce, legName } = await import('../src/engine/navigation');
+  // East 500 m on a red-stripe trail, then a left turn north onto a forest track for 400 m.
+  const coords: Array<[number, number]> = [];
+  for (let i = 0; i <= 10; i++) coords.push([25 + i * 0.000635, 45]);
+  for (let i = 1; i <= 8; i++) coords.push([25.00635, 45 + i * 0.00045]);
+  const segs = coords.slice(1).map((_, i) =>
+    i < 10 ? { wayId: 1, kind: 'marked', marking: 'red stripe' } : { wayId: 2, kind: 'track' },
+  );
+
+  it('finds the left turn and names the trails', () => {
+    const m = buildManeuvers(coords, segs);
+    expect(m.map((x) => x.type)).toEqual(['depart', 'left', 'arrive']);
+    expect(m[0].text).toBe('Head out on the red stripe trail');
+    expect(m[1].text).toBe('Turn left onto the forest track');
+    expect(m[1].along).toBeGreaterThan(480);
+    expect(m[1].along).toBeLessThan(520);
+  });
+
+  it('ignores OSM splits of the same trail going straight', () => {
+    const split = segs.map((s, i) => (i < 5 ? { ...s, wayId: 7 } : s));
+    expect(buildManeuvers(coords, split).map((x) => x.type)).toEqual(['depart', 'left', 'arrive']);
+  });
+
+  it('phrases spoken announcements by distance', () => {
+    const [, left] = buildManeuvers(coords, segs);
+    expect(announce(left, 180)).toBe('In 200 metres, turn left onto the forest track');
+    expect(announce(left, 12)).toBe('Turn left onto the forest track');
+    expect(legName({ wayId: 1, kind: 'path', name: 'Drumul Familiar' })).toBe('Drumul Familiar');
+  });
+});

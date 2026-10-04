@@ -5,4 +5,4 @@ export type { Trail, TrailKind, TravelMode, Poi, PoiKind } from './trails/types'
 export { ROMANIA_BBOX, ROMANIA_CENTER } from './config';
 export { listOfflineAreas, removeOfflineArea, planSize, type OfflineArea, type OfflinePlan } from './offline';
 export { buildGpx, parseGpxFile, type GpxData, type GpxPoint } from './gpx';
-export { RouteFollower, type NavState } from './navigation';
+export { RouteFollower, announce, buildManeuvers, type Maneuver, type NavState, type TurnType } from './navigation';

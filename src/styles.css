@@ -904,3 +904,124 @@ body.navigating .maplibregl-ctrl-top-right {
     transition: none !important;
   }
 }
+
+/* ------------------------------------------------------------------ turn-by-turn navigation */
+.nav-hud {
+  padding: 0;
+  overflow: hidden;
+  background: rgba(14, 92, 62, 0.97);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.nav-hud.off-route {
+  background: rgba(140, 32, 32, 0.97);
+}
+
+.nav-hud .turn {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.turn-ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: #fff;
+}
+
+.turn-dist {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.turn-text {
+  font-size: 17px;
+  font-weight: 600;
+  opacity: 0.95;
+}
+
+.nav-hud .turn .btn {
+  margin-left: auto;
+}
+
+.nav-hud .then {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.22);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.nav-bar {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(var(--safe-bottom) + 10px);
+  z-index: 8;
+  max-width: 520px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px 12px 18px;
+  border-radius: 22px;
+}
+
+.nb-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.nb-main b {
+  display: block;
+  font-size: 22px;
+  color: var(--good);
+  letter-spacing: -0.01em;
+}
+
+.nb-main span {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.nb-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--surface-3);
+  font-size: 18px;
+}
+
+.nav-bar .btn {
+  background: var(--bad);
+  color: #fff;
+}
+
+.recenter {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--safe-bottom) + 100px);
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+body.navigating .tabbar,
+body.navigating .fabs,
+body.navigating .sheet {
+  display: none;
+}
