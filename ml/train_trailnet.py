@@ -6,6 +6,11 @@ inference in the browser (onnxruntime-web).
 OSM is incomplete, so "unlabelled" ≠ "not a trail": negatives get a lower
 weight and sparsely mapped regions are left out of training entirely.
 
+Experiment (TRAILNET_HEADS=2): a second waterway head that teaches mapped
+streams as confident negatives. On held-out regions it did not reduce
+stream→trail confusion (16.9% vs 16.3%) — Carpathian forest roads often follow
+streams — so the shipped model is the single-head v1 (the default).
+
 Usage:  python ml/train_trailnet.py [data_dir] [out_dir] [epochs]
 """
 
@@ -29,6 +34,7 @@ CHIP = 96
 BATCH = 16
 STEPS = 150
 NEG_WEIGHT = 0.5
+HEADS = int(os.environ.get("TRAILNET_HEADS", "1"))
 torch.manual_seed(0)
 np.random.seed(0)
 
@@ -47,10 +53,14 @@ def load():
         x = normalize(d["img"])
         y = d["label"].astype(np.float32)
         v = d["valid"].astype(np.float32)
+        wk = float(d["water_known"]) if "water_known" in d else 0.0
+        water = d["water"].astype(np.float32) if "water" in d else np.zeros_like(y)
+        # Water channel: 1 = stream, 0 = not; -1 = unknown (ignored by the loss).
+        wl = np.where(wk > 0, water * (1 - y), -1).astype(np.float32)
         if min(y.shape) < CHIP:
             skipped.append(name)
             continue
-        item = (name, x, y, v)
+        item = (name, x, y, v, wl)
         if name in VAL:
             val.append(item)
         elif y.mean() < MIN_LABEL_DENSITY:
@@ -65,7 +75,7 @@ def conv(i, o):
 
 
 class TrailNet(nn.Module):
-    def __init__(self, c=(16, 32, 64, 96)):
+    def __init__(self, c=(16, 32, 64, 96), heads=HEADS):
         super().__init__()
         self.e1 = nn.Sequential(conv(4, c[0]), conv(c[0], c[0]))
         self.e2 = nn.Sequential(conv(c[0], c[1]), conv(c[1], c[1]))
@@ -74,7 +84,7 @@ class TrailNet(nn.Module):
         self.d3 = nn.Sequential(conv(c[3] + c[2], c[2]), conv(c[2], c[2]))
         self.d2 = nn.Sequential(conv(c[2] + c[1], c[1]), conv(c[1], c[1]))
         self.d1 = nn.Sequential(conv(c[1] + c[0], c[0]), conv(c[0], c[0]))
-        self.head = nn.Conv2d(c[0], 1, 1)
+        self.head = nn.Conv2d(c[0], heads, 1)
 
     def forward(self, x):
         e1 = self.e1(x)
@@ -89,9 +99,9 @@ class TrailNet(nn.Module):
 
 
 def sample_batch(items):
-    xs, ys, vs = [], [], []
+    xs, ys, vs, ws = [], [], [], []
     for _ in range(BATCH):
-        _, x, y, v = items[np.random.randint(len(items))]
+        _, x, y, v, wl = items[np.random.randint(len(items))]
         H, W = y.shape
         # Bias crops towards labelled areas so batches aren't mostly empty.
         for _try in range(5):
@@ -99,25 +109,41 @@ def sample_batch(items):
             if y[i : i + CHIP, j : j + CHIP].mean() > 0.005:
                 break
         cx, cy, cv = x[:, i : i + CHIP, j : j + CHIP], y[i : i + CHIP, j : j + CHIP], v[i : i + CHIP, j : j + CHIP]
+        cw = wl[i : i + CHIP, j : j + CHIP]
         k = np.random.randint(4)
-        cx, cy, cv = np.rot90(cx, k, (1, 2)), np.rot90(cy, k), np.rot90(cv, k)
+        cx, cy, cv, cw = np.rot90(cx, k, (1, 2)), np.rot90(cy, k), np.rot90(cv, k), np.rot90(cw, k)
         if np.random.rand() < 0.5:
-            cx, cy, cv = cx[:, :, ::-1], cy[:, ::-1], cv[:, ::-1]
+            cx, cy, cv, cw = cx[:, :, ::-1], cy[:, ::-1], cv[:, ::-1], cw[:, ::-1]
         # Radiometric jitter: scenes differ in sun angle, haze and season.
         cx = cx * np.random.uniform(0.9, 1.1) + np.random.uniform(-0.08, 0.08)
         xs.append(cx.copy())
         ys.append(cy.copy())
         vs.append(cv.copy())
+        ws.append(cw.copy())
     t = lambda a: torch.from_numpy(np.stack(a)).float()
-    return t(xs), t(ys)[:, None], t(vs)[:, None]
+    return t(xs), t(ys)[:, None], t(vs)[:, None], t(ws)[:, None]
 
 
-def loss_fn(logits, y, v):
-    w = v * torch.where(y > 0, torch.ones_like(y), torch.full_like(y, NEG_WEIGHT))
-    bce = F.binary_cross_entropy_with_logits(logits, y, weight=w, pos_weight=torch.tensor(3.0))
-    p = torch.sigmoid(logits) * v
+def loss_fn(out, y, v, wl):
+    trail = out[:, :1]
+    if out.shape[1] == 1:
+        # v1: trail head only; streams are ordinary (weak) negatives.
+        w = v * torch.where(y > 0, torch.ones_like(y), torch.full_like(y, NEG_WEIGHT))
+        bce = F.binary_cross_entropy_with_logits(trail, y, weight=w, pos_weight=torch.tensor(3.0))
+        p = torch.sigmoid(trail) * v
+        return bce + 0.5 * (1 - (2 * (p * y).sum() + 1) / (p.sum() + (y * v).sum() + 1))
+    water = out[:, 1:2]
+    is_stream = (wl > 0).float()
+    # Unlabelled pixels are weak negatives (OSM is incomplete); mapped streams are strong ones.
+    neg_w = torch.where(is_stream > 0, torch.ones_like(y), torch.full_like(y, NEG_WEIGHT))
+    w = v * torch.where(y > 0, torch.ones_like(y), neg_w)
+    bce = F.binary_cross_entropy_with_logits(trail, y, weight=w, pos_weight=torch.tensor(3.0))
+    p = torch.sigmoid(trail) * v
     dice = 1 - (2 * (p * y).sum() + 1) / (p.sum() + (y * v).sum() + 1)
-    return bce + 0.5 * dice
+    known = (wl >= 0).float() * v
+    ww = known * torch.where(wl > 0, torch.ones_like(wl), torch.full_like(wl, 0.3))
+    water_bce = F.binary_cross_entropy_with_logits(water, wl.clamp(min=0), weight=ww, pos_weight=torch.tensor(3.0))
+    return bce + 0.5 * dice + 0.5 * water_bce
 
 
 @torch.no_grad()
@@ -125,10 +151,12 @@ def evaluate(model, items, thr=0.5, tol=2):
     """Precision/recall with a ±tol px tolerance (line labels are ~2 px wide)."""
     model.eval()
     tp_p = fp = tp_r = fn = 0
-    for _, x, y, v in items:
+    stream_px = stream_fp = 0
+    for _, x, y, v, wl in items:
         H, W = y.shape
         H8, W8 = H - H % 8, W - W % 8
         logits = model(torch.from_numpy(x[None, :, :H8, :W8]).float())[0, 0].numpy()
+        stream = wl[:H8, :W8] > 0
         pred = (1 / (1 + np.exp(-logits))) > thr
         yy, vv = y[:H8, :W8] > 0, v[:H8, :W8] > 0
         pool = lambda m: F.max_pool2d(torch.from_numpy(m[None, None].astype(np.float32)), 2 * tol + 1, 1, tol)[0, 0].numpy() > 0
@@ -137,9 +165,14 @@ def evaluate(model, items, thr=0.5, tol=2):
         fp += (pred & ~y_d & vv).sum()
         tp_r += (yy & p_d & vv).sum()
         fn += (yy & ~p_d & vv).sum()
+        # Stream confusion: mapped stream pixels (away from any trail) predicted as trail.
+        s_only = stream & ~y_d & vv
+        stream_px += s_only.sum()
+        stream_fp += (pred & s_only).sum()
     model.train()
     prec = tp_p / max(1, tp_p + fp)
     rec = tp_r / max(1, tp_r + fn)
+    evaluate.stream_fp_rate = stream_fp / max(1, stream_px)
     return prec, rec, 2 * prec * rec / max(1e-9, prec + rec)
 
 
@@ -155,26 +188,30 @@ def main():
     for ep in range(EPOCHS):
         t0, tot = time.time(), 0.0
         for _ in range(STEPS):
-            x, y, v = sample_batch(train)
-            loss = loss_fn(model(x), y, v)
+            x, y, v, wl = sample_batch(train)
+            loss = loss_fn(model(x), y, v, wl)
             opt.zero_grad()
             loss.backward()
             opt.step()
             sched.step()
             tot += loss.item()
         prec, rec, f1 = evaluate(model, val)
-        history.append({"epoch": ep + 1, "loss": tot / STEPS, "precision": prec, "recall": rec, "f1": f1})
-        print(f"ep {ep + 1:3d} loss {tot / STEPS:.4f}  val P {prec:.3f} R {rec:.3f} F1 {f1:.3f}  {time.time() - t0:.0f}s", flush=True)
+        sfp = evaluate.stream_fp_rate
+        history.append({"epoch": ep + 1, "loss": tot / STEPS, "precision": prec, "recall": rec, "f1": f1, "stream_fp": sfp})
+        print(f"ep {ep + 1:3d} loss {tot / STEPS:.4f}  val P {prec:.3f} R {rec:.3f} F1 {f1:.3f} streams→trail {sfp:.3f}  {time.time() - t0:.0f}s", flush=True)
         if f1 > best:
             best = f1
             torch.save(model.state_dict(), os.path.join(OUT, "trailnet.pt"))
     model.load_state_dict(torch.load(os.path.join(OUT, "trailnet.pt")))
     model.eval()
     # Pick the threshold that maximises validation F1 for the app to use.
-    sweep = {t: evaluate(model, val, t) for t in (0.3, 0.4, 0.5, 0.6, 0.7)}
+    sweep = {}
+    for t in (0.3, 0.4, 0.5, 0.6, 0.7):
+        sweep[t] = (*evaluate(model, val, t), evaluate.stream_fp_rate)
     thr = max(sweep, key=lambda t: sweep[t][2])
     report = {
         "best_f1": float(sweep[thr][2]), "precision": float(sweep[thr][0]), "recall": float(sweep[thr][1]),
+        "sweep": {str(t): [float(x) for x in v] for t, v in sweep.items()},
         "threshold": thr, "val_regions": sorted(VAL), "train_regions": [n for n, *_ in train],
         "history": [{k: float(v) for k, v in h.items()} for h in history],
     }
