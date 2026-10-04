@@ -1,0 +1,17 @@
+{
+  "name": "Natura — Romania nature & hidden trails",
+  "short_name": "Natura",
+  "description": "Nature and hidden-trail map of Romania built on fresh Sentinel-2 imagery.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#14231a",
+  "theme_color": "#14231a",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

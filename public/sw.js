@@ -1,0 +1,71 @@
+/*
+ * Service worker: makes the app installable and fast on repeat launches.
+ *  - App shell (same-origin GET): stale-while-revalidate.
+ *  - Terrain tiles, fonts, reference vector tiles: cache-first (they rarely change).
+ *  - Sentinel COG range reads, STAC and Overpass: network only (huge / dynamic);
+ *    rendered imagery tiles are cached by the imagery workers instead.
+ */
+const SHELL = 'nature-shell-v1';
+const ASSETS = 'nature-assets-v1';
+const KEEP = [SHELL, ASSETS, 'nature-engine-tiles-v1'];
+const ASSET_LIMIT = 4000;
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(SHELL).then((c) => c.addAll(['/', '/manifest.webmanifest'])).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('nature-') && !KEEP.includes(k)).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim()),
+  );
+});
+
+const CACHE_FIRST = [
+  /^https:\/\/s3\.amazonaws\.com\/elevation-tiles-prod\//,
+  /^https:\/\/tiles\.openfreemap\.org\//,
+];
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET' || req.headers.has('range')) return;
+  const url = new URL(req.url);
+
+  if (url.origin === self.location.origin) {
+    event.respondWith(staleWhileRevalidate(req));
+  } else if (CACHE_FIRST.some((re) => re.test(req.url))) {
+    event.respondWith(cacheFirst(req));
+  }
+});
+
+async function staleWhileRevalidate(req) {
+  const cache = await caches.open(SHELL);
+  const hit = await cache.match(req, { ignoreSearch: req.mode === 'navigate' });
+  const net = fetch(req)
+    .then((res) => {
+      if (res.ok) cache.put(req, res.clone());
+      return res;
+    })
+    .catch(async () => (req.mode === 'navigate' ? await cache.match('/') : undefined) ?? Response.error());
+  return hit || net;
+}
+
+let puts = 0;
+async function cacheFirst(req) {
+  const cache = await caches.open(ASSETS);
+  const hit = await cache.match(req);
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok) {
+    await cache.put(req, res.clone());
+    if (++puts % 200 === 0) trim(cache);
+  }
+  return res;
+}
+
+async function trim(cache) {
+  const keys = await cache.keys();
+  for (let i = 0; i < keys.length - ASSET_LIMIT; i++) await cache.delete(keys[i]);
+}
