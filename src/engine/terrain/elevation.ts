@@ -80,6 +80,7 @@ async function fetchTile(url: string): Promise<Tile> {
   const { data } = g.getImageData(0, 0, bmp.width, bmp.height);
   const elev = new Float32Array(bmp.width * bmp.height);
   for (let i = 0; i < elev.length; i++) elev[i] = decodeTerrarium(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
+  const size = bmp.width; // read before close(): a closed ImageBitmap reports width 0
   bmp.close();
-  return { size: bmp.width, elev };
+  return { size, elev };
 }

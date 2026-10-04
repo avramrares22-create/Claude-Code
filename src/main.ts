@@ -17,11 +17,19 @@ const geolocate = new maplibregl.GeolocateControl({
 });
 engine.map.addControl(geolocate, 'top-right');
 
-// Compact attribution starts expanded on narrow screens and covers the map; start collapsed
-// (the ⓘ button still shows the Copernicus / OSM credits).
-void engine.ready.then(() =>
-  document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show'),
-);
+// Compact attribution pops open on narrow screens once the first source credits
+// arrive, covering the map. Collapse it that first time; ⓘ still shows the
+// Copernicus / OSM credits on demand.
+const attrib = document.querySelector('.maplibregl-ctrl-attrib');
+if (attrib) {
+  const obs = new MutationObserver(() => {
+    if (attrib.classList.contains('maplibregl-compact-show')) {
+      attrib.classList.remove('maplibregl-compact-show');
+      obs.disconnect();
+    }
+  });
+  obs.observe(attrib, { attributes: true, attributeFilter: ['class'] });
+}
 
 // ------------------------------------------------------------------ helpers
 

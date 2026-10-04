@@ -114,8 +114,13 @@ export class MapEngine {
     m.addSource('pois', { type: 'geojson', data: EMPTY });
     m.addSource('route', { type: 'geojson', data: EMPTY });
 
-    const width = (base: number): maplibregl.ExpressionSpecification =>
-      ['interpolate', ['exponential', 1.6], ['zoom'], 11, base * 0.6, 14, base * 1.5, 17, base * 4];
+    // Zoom interpolation must be the outermost expression, so per-feature
+    // variation (marked vs other) goes inside each stop.
+    const width = (base: number, markedBase = base): maplibregl.ExpressionSpecification => {
+      const at = (k: number): maplibregl.ExpressionSpecification | number =>
+        markedBase === base ? base * k : ['match', ['get', 'kind'], 'marked', markedBase * k, base * k];
+      return ['interpolate', ['exponential', 1.6], ['zoom'], 11, at(0.6), 14, at(1.5), 17, at(4)];
+    };
 
     m.addLayer({
       id: 'trails-casing',
@@ -132,7 +137,7 @@ export class MapEngine {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': ['get', 'color'],
-        'line-width': ['match', ['get', 'kind'], 'marked', width(2), width(1.3)],
+        'line-width': width(1.3, 2),
       },
     });
     m.addLayer({
