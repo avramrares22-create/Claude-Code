@@ -207,3 +207,27 @@ export function classifyPoi(n: OsmNode): Poi | null {
   const ele = t.ele ? Number.parseFloat(t.ele.replace(',', '.')) : undefined;
   return { id: n.id, kind, name: t.name, ele: Number.isFinite(ele) ? ele : undefined, lng: n.lon, lat: n.lat, tags: t };
 }
+
+/**
+ * Estimated motor traffic on a way, 0 (never cars) … 1 (main road), from its
+ * class, access rules, surface and width. Used by the bike "keep off car
+ * roads" preference so quiet lanes and forestry tracks aren't treated like
+ * county roads.
+ */
+export function carTraffic(tags: Tags): number {
+  const BASE: Record<string, number> = {
+    motorway: 1, trunk: 1, primary: 1, secondary: 0.95, tertiary: 0.8, unclassified: 0.55, residential: 0.5,
+    living_street: 0.25, service: 0.3, track: 0.15, road: 0.6,
+  };
+  let t = BASE[tags.highway] ?? 0;
+  if (!t) return 0;
+  if (tags.highway === 'track' && tags.tracktype === 'grade1') t = 0.3;
+  const motor = tags.motor_vehicle ?? tags.vehicle ?? tags.access;
+  if (motor && /^(no|private|forestry|agricultural|delivery)$/.test(motor)) t *= 0.25;
+  else if (motor === 'destination' || motor === 'permissive') t *= 0.6;
+  if (tags.service && /^(driveway|parking_aisle|alley)$/.test(tags.service)) t *= 0.5;
+  if (tags.surface && /^(dirt|earth|ground|grass|gravel|fine_gravel|mud|sand|unpaved|compacted)$/.test(tags.surface)) t *= 0.6;
+  const w = Number.parseFloat(tags.width ?? '');
+  if (Number.isFinite(w) && w < 3) t *= 0.7;
+  return Math.min(1, t);
+}

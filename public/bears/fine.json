@@ -1,0 +1,99 @@
+{
+ "version": 1,
+ "res": 0.002,
+ "tile": 500,
+ "tiles": [
+  "20_45",
+  "20_46",
+  "21_44",
+  "21_45",
+  "21_46",
+  "21_47",
+  "22_43",
+  "22_44",
+  "22_45",
+  "22_46",
+  "22_47",
+  "22_48",
+  "23_43",
+  "23_44",
+  "23_45",
+  "23_46",
+  "23_47",
+  "23_48",
+  "24_43",
+  "24_44",
+  "24_45",
+  "24_46",
+  "24_47",
+  "25_43",
+  "25_44",
+  "25_45",
+  "25_46",
+  "25_47",
+  "26_43",
+  "26_44",
+  "26_45",
+  "26_46",
+  "26_47",
+  "26_48",
+  "27_43",
+  "27_44",
+  "27_45",
+  "27_46",
+  "27_47",
+  "27_48",
+  "28_43",
+  "28_44",
+  "28_45",
+  "28_46",
+  "28_47",
+  "29_44",
+  "29_45"
+ ],
+ "encoding": {
+  "zero": 0,
+  "log10Min": -4.0,
+  "log10Max": 1.0,
+  "steps": 254
+ },
+ "method": "1 km census-based density redistributed by habitat use (WorldCover 40 m); cell totals preserved",
+ "spotChecks": {
+  "Brașov – Piața Sfatului": {
+   "fine": 0.0088,
+   "coarse": 0.2323
+  },
+  "Brașov – Gara": {
+   "fine": 0.0073,
+   "coarse": 0.021
+  },
+  "Brașov – Astra": {
+   "fine": 0.0033,
+   "coarse": 0.021
+  },
+  "Brașov – Răcădău (block edge)": {
+   "fine": 0.4193,
+   "coarse": 0.4188
+  },
+  "Tâmpa forest": {
+   "fine": 0.4266,
+   "coarse": 0.4188
+  },
+  "Postăvaru forest": {
+   "fine": 0.3664,
+   "coarse": 0.3656
+  },
+  "Poiana Brașov resort": {
+   "fine": 0.2864,
+   "coarse": 0.4383
+  },
+  "Bucegi plateau (alpine)": {
+   "fine": 0.2572,
+   "coarse": 0.2544
+  },
+  "București": {
+   "fine": 0.0,
+   "coarse": 0.0
+  }
+ }
+}

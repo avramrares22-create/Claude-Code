@@ -28,6 +28,7 @@ import {
 } from './engine';
 import {
   habitatFactor,
+  loadFineTile,
   type HabitatSample,
   type Poly,
   assessBearRisk,
@@ -35,6 +36,7 @@ import {
   fetchSightings,
   loadBearGrid,
   RISK_LABEL,
+  riskLevel,
   type BearRisk,
   type Sighting,
 } from './engine/bears/bearRisk';
@@ -462,7 +464,56 @@ let following = false;
 let unsubLocate: (() => void) | null = null;
 const fabLocate = $('fab-locate');
 
+// Snap the dot onto the trail you're walking (within GPS accuracy), like map apps do on roads.
+let trailIndex: Map<string, Array<Array<[number, number]>>> | null = null;
+engine.trails.onChange(() => (trailIndex = null));
+function nearestOnTrail(lng: number, lat: number, maxM: number): [number, number] | null {
+  if (!trailIndex) {
+    trailIndex = new Map();
+    for (const t of engine.trails.trails) {
+      if (t.tags.footway === 'sidewalk') continue;
+      const seen = new Set<string>();
+      for (const [x, y] of t.coords) {
+        const k = `${Math.floor(x * 200)}:${Math.floor(y * 200)}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        let l = trailIndex.get(k);
+        if (!l) trailIndex.set(k, (l = []));
+        l.push(t.coords);
+      }
+    }
+  }
+  const kx = 111320 * Math.cos((lat * Math.PI) / 180);
+  let best: [number, number] | null = null;
+  let bestD = maxM;
+  const cx = Math.floor(lng * 200);
+  const cy = Math.floor(lat * 200);
+  const done = new Set<Array<[number, number]>>();
+  for (let dx = -1; dx <= 1; dx++)
+    for (let dy = -1; dy <= 1; dy++)
+      for (const c of trailIndex.get(`${cx + dx}:${cy + dy}`) ?? []) {
+        if (done.has(c)) continue;
+        done.add(c);
+        for (let i = 1; i < c.length; i++) {
+          const ax = (c[i - 1][0] - lng) * kx, ay = (c[i - 1][1] - lat) * 111320;
+          const bx = (c[i][0] - lng) * kx, by = (c[i][1] - lat) * 111320;
+          const vx = bx - ax, vy = by - ay;
+          const L = vx * vx + vy * vy;
+          const u = L ? Math.max(0, Math.min(1, -(ax * vx + ay * vy) / L)) : 0;
+          const px = ax + u * vx, py = ay + u * vy;
+          const d = Math.hypot(px, py);
+          if (d < bestD) {
+            bestD = d;
+            best = [lng + px / kx, lat + py / 111320];
+          }
+        }
+      }
+  return best;
+}
+
 function showUser(f: Fix) {
+  const snap = !navActive && f.accuracy < 30 ? nearestOnTrail(f.lng, f.lat, Math.min(15, Math.max(6, f.accuracy))) : null;
+  if (snap) f = { ...f, lng: snap[0], lat: snap[1] };
   if (!userMarker) {
     const el = document.createElement('div');
     el.className = 'user-pos';
@@ -896,6 +947,7 @@ function renderRouteSheet(route: Route | null) {
     ${p.mode !== 'foot' ? slider('pref-offroad', 'Off-road', p.offroad >= 1 ? 'maximum' : p.offroad > 0 ? 'prefer dirt' : 'any surface', 0, 1, 0.5, p.offroad) : ''}
     ${p.mode === 'foot' ? slider('pref-diff', 'Max difficulty', SAC_LABEL[p.maxDifficulty], 1, 6, 1, p.maxDifficulty) : ''}
     ${p.mode === 'bike' ? slider('pref-mtb', 'Max MTB grade', `S${p.maxMtbScale}`, 0, 5, 1, p.maxMtbScale) : ''}
+    ${p.mode !== 'moto' ? slider('pref-bears', 'Avoid bear areas', (p.avoidBears ?? 0.5) <= 0 ? 'off' : (p.avoidBears ?? 0.5) < 1 ? 'some' : 'strongly', 0, 1, 0.5, p.avoidBears ?? 0.5) : ''}
     ${p.mode === 'bike' ? `<div class="row"><div><div class="label">Keep off car roads</div><div class="hint">Sidewalks, cycleways, paths and tracks first; roads with cars only when there's no other way</div></div>
        <label class="switch"><input id="pref-nocars" type="checkbox" ${p.avoidCarRoads !== false ? 'checked' : ''}><span></span></label></div>` : ''}
     ${p.mode !== 'foot' ? `<div class="row"><div><div class="label">Confirmed legal access only</div><div class="hint">Skip ways without explicit permission</div></div>
@@ -925,6 +977,11 @@ function renderRouteSheet(route: Route | null) {
          <div class="stat"><b>↓${Math.round(route.descent)}</b><small>m down</small></div>
        </div>
        <div id="profile"></div>
+       ${
+         route.bearIndex != null && route.mode !== 'moto'
+           ? `<div class="meta bear-route lvl-${riskLevel(route.bearIndex)}">🐻 Bear exposure along the way: <b>${RISK_LABEL[riskLevel(route.bearIndex)]}</b> (${route.bearIndex}/100)</div>`
+           : ''
+       }
        ${warn}
        ${options}
        <div class="btns"><button class="btn" id="route-gpx">Save as GPX</button></div>`,
@@ -968,6 +1025,7 @@ function renderRouteSheet(route: Route | null) {
   bind('pref-diff', (el) => ({ maxDifficulty: Number(el.value) }));
   bind('pref-mtb', (el) => ({ maxMtbScale: Number(el.value) }));
   bind('pref-nocars', (el) => ({ avoidCarRoads: el.checked }));
+  bind('pref-bears', (el) => ({ avoidBears: Number(el.value) }));
   bind('pref-strict', (el) => ({ strictAccess: el.checked }));
 }
 
@@ -1254,6 +1312,7 @@ async function updateBearRisk(f: Fix, mode: string) {
   } catch {
     return;
   }
+  await grid.ensureFine(f.lng, f.lat, loadFineTile);
   bear.habitat = localHabitat(f.lng, f.lat);
   bear.risk = assessBearRisk(grid, { lng: f.lng, lat: f.lat, mode, sightings: bear.sightings ?? undefined, localFactor: bear.habitat?.factor });
   bear.computedAt = Date.now();

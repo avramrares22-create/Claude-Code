@@ -3,6 +3,7 @@
  * the Sentinel-2 imagery engine, terrain, trail intelligence and the router.
  */
 import { MARK_COLORS } from './trails/classify';
+import { loadBearGrid, loadFineTile, riskIndex, seasonFactor } from './bears/bearRisk';
 import { applyBasemap, type BaseMode, type Theme } from './mapStyle';
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, LngLatLike, Map as MLMap } from 'maplibre-gl';
@@ -617,7 +618,28 @@ export class MapEngine {
       // Too large or offline: route without slope (Tobler on flat ground).
     }
     this.graph.attachElevation(this.elevation);
-    const route = findRoute(this.graph, from, to, prefs, this.routeModel);
+    // Bear-aware routing: the ~200 m bear map along the way (1 km grid where finer tiles are missing).
+    let bearDensity: ((lng: number, lat: number) => number) | undefined;
+    if ((prefs.avoidBears ?? DEFAULT_PREFS.avoidBears ?? 0) > 0 && (prefs.mode ?? 'foot') !== 'moto') {
+      try {
+        const grid = await loadBearGrid();
+        await Promise.all([grid.ensureFine(from[0], from[1], loadFineTile), grid.ensureFine(to[0], to[1], loadFineTile)]);
+        bearDensity = (x, y) => grid.local(x, y, 0.15);
+      } catch {
+        // bear map unavailable: route without it
+      }
+    }
+    const route = findRoute(this.graph, from, to, { ...DEFAULT_PREFS, ...prefs, bearDensity }, this.routeModel);
+    if (route && bearDensity) {
+      // Average bear density along the way (every ~10th vertex) → the same 1–100 scale as the bear meter.
+      const step = Math.max(1, Math.floor(route.coords.length / 60));
+      let sum = 0, n = 0;
+      for (let i = 0; i < route.coords.length; i += step) {
+        sum += bearDensity(route.coords[i][0], route.coords[i][1]);
+        n++;
+      }
+      route.bearIndex = riskIndex((sum / Math.max(1, n)) * seasonFactor(new Date()));
+    }
     this.showRoute(route);
     return route;
   }

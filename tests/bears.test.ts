@@ -27,9 +27,10 @@ describe('bear density grid', () => {
 
   it('rises at dusk and in autumn, falls in mid-winter', () => {
     const p = { lng: 25.6, lat: 45.6 };
-    const noon = assessBearRisk(grid, { ...p, when: OCT_NOON }).r10.index;
-    const dusk = assessBearRisk(grid, { ...p, when: new Date('2026-10-04T16:00:00Z') }).r10.index;
-    const jan = assessBearRisk(grid, { ...p, when: new Date('2026-01-15T10:00:00Z') }).r10.index;
+    // Dusk raises the risk right around you (1 km); the season moves both.
+    const noon = assessBearRisk(grid, { ...p, when: OCT_NOON }).r1.index;
+    const dusk = assessBearRisk(grid, { ...p, when: new Date('2026-10-04T16:00:00Z') }).r1.index;
+    const jan = assessBearRisk(grid, { ...p, when: new Date('2026-01-15T10:00:00Z') }).r1.index;
     expect(dusk).toBeGreaterThan(noon);
     expect(jan).toBeLessThan(noon);
   });
@@ -80,5 +81,18 @@ describe('fine-scale habitat', () => {
     expect(forestHere.factor).toBeGreaterThan(1.5);
     expect(forestFar.builtNear).toBeGreaterThan(0.9);
     expect(forestFar.factor).toBeLessThan(0.5);
+  });
+});
+
+describe('~200 m bear layer', () => {
+  const g = new BearGrid(meta, new Uint8Array(readFileSync('public/bears/density.bin')));
+  g.setFineMeta(JSON.parse(readFileSync('public/bears/fine.json', 'utf8')));
+  g.addFineTile('25_45', new Uint8Array(readFileSync('public/bears/fine/25_45.bin')));
+  it('separates Brașov streets from the forest right above them', () => {
+    const gara = assessBearRisk(g, { lng: 25.6167, lat: 45.6597, when: OCT_NOON }).r1;
+    const tampa = assessBearRisk(g, { lng: 25.597, lat: 45.635, when: OCT_NOON }).r1;
+    expect(g.hasFine(25.6167, 45.6597)).toBe(true);
+    expect(gara.level === 'low' || gara.level === 'moderate').toBe(true);
+    expect(tampa.index - gara.index).toBeGreaterThan(25);
   });
 });

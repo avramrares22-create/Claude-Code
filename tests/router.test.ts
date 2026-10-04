@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TrailGraph } from '../src/engine/routing/graph';
 import { edgeTime, findRoute, toblerSpeed } from '../src/engine/routing/router';
-import { classifyWay } from '../src/engine/trails/classify';
+import { carTraffic, classifyWay } from '../src/engine/trails/classify';
 import type { ElevationProvider } from '../src/engine/terrain/elevation';
 import type { OsmWay, Trail } from '../src/engine/trails/types';
 
@@ -108,5 +108,24 @@ describe('bike: keep off car roads', () => {
   });
   it('takes the shorter street when the option is off', () => {
     expect(findRoute(g, A, B, { ...prefs, avoidCarRoads: false })!.wayIds).toEqual([20]);
+  });
+});
+
+describe('bear-aware and traffic-aware routing', () => {
+  const north = trail(30, [[1, ...A], [9, 25.005, 45.0004], [2, ...B]], { highway: 'path' });
+  const south = trail(31, [[1, ...A], [10, 25.0, 44.9992], [11, 25.01, 44.9992], [2, ...B]], { highway: 'path' });
+  const g = new TrailGraph([north, south]);
+  g.attachElevation(flat);
+  // Dense bear forest north of the line, open country south.
+  const bears = (_lng: number, lat: number) => (lat > 45.0 ? 1.0 : 0.005);
+  it('takes the slightly longer way around a bear hotspot when asked', () => {
+    expect(findRoute(g, A, B, { mode: 'foot', avoidBears: 0 , bearDensity: bears })!.wayIds).toEqual([30]);
+    expect(findRoute(g, A, B, { mode: 'foot', avoidBears: 1, bearDensity: bears })!.wayIds).toEqual([31]);
+  });
+
+  it('grades car traffic: a forestry-only track counts as quiet, a county road as busy', () => {
+    expect(carTraffic({ highway: 'track', motor_vehicle: 'forestry' })).toBeLessThan(0.1);
+    expect(carTraffic({ highway: 'tertiary' })).toBeGreaterThan(0.7);
+    expect(carTraffic({ highway: 'footway', footway: 'sidewalk' })).toBe(0);
   });
 });

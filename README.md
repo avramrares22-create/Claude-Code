@@ -124,6 +124,21 @@ npm run routenet:collect && npm run routenet:build && npm run routenet:train
   - travel mode (quiet, fast bikes surprise bears more)
 - **The index** is logarithmic: 1 means fewer than 1 bear per 500 km², 100 means 1.5 bears per km² or more. Bands: low below 20, moderate 20–44, high 45–69, very high 70 or more.
 
+**Local accuracy (~200 m)** (`ml/bears/build_bear_fine.py` → `public/bears/fine/*.bin`, loaded per area).
+
+- Sightings are only located to about 1 km, so nothing can be learned below 1 km from them. Instead, each 1 km cell's bears are spread over its 200 m sub-cells using full-detail land cover (ESA WorldCover 40 m) and how bears use the landscape:
+  - forest and forest edges carry the most
+  - built-up land very little
+  - water none
+- Each cell's census total is kept exactly.
+- Result: a Brașov street (Gara: 0.007 bears/km²) reads Low or Moderate, while Tâmpa's forest 1 km away (0.43) reads Very high. Before, both shared one ~0.2 value.
+- The 1 km reading is a 300 m-weighted average around you. The 10 km reading weights nearer areas more (σ 3 km), and time of day only changes the 1 km reading.
+
+**Bear- and traffic-aware routing.**
+- "Avoid bear areas" (on by default for hiking and biking) weighs every part of a route by the bear density along it, and each planned route shows its bear exposure.
+- For bikes, "Keep off car roads" uses a 0–1 traffic estimate per road (type, surface, width, access) instead of a yes/no.
+- Satellite imagery at 10 m cannot see cars, so traffic is estimated, not observed.
+
 It is an encounter-likelihood estimate, not a probability of being attacked. No public geolocated attack records or live GPS-collar data exist for Romania, so neither is used. A low value never means "no bears".
 
 **Search model** (`src/engine/search/`, `ml/search/`, `scripts/search/`).

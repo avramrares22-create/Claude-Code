@@ -29,11 +29,54 @@ export interface BearGridMeta {
   sources?: string[];
 }
 
+export interface FineMeta {
+  res: number;
+  tile: number;
+  tiles: string[];
+}
+
 export class BearGrid {
+  /** ~200 m tiles (1° each), loaded for the area around you. */
+  private fine = new Map<string, Uint8Array | null>();
+  private fineMeta: FineMeta | null = null;
+
   constructor(
     readonly meta: BearGridMeta,
     private readonly data: Uint8Array,
   ) {}
+
+  setFineMeta(m: FineMeta) {
+    this.fineMeta = m;
+  }
+
+  /** Adds a fine tile (for tests and loaders). */
+  addFineTile(key: string, bytes: Uint8Array | null) {
+    this.fine.set(key, bytes);
+  }
+
+  /** Loads the fine tiles around a point (no-op where there are none or already loaded). */
+  async ensureFine(lng: number, lat: number, load: (key: string) => Promise<Uint8Array | null>) {
+    const fm = this.fineMeta;
+    if (!fm) return;
+    const keys = new Set<string>();
+    for (const dx of [-0.06, 0, 0.06]) for (const dy of [-0.05, 0, 0.05]) keys.add(`${Math.floor(lng + dx)}_${Math.floor(lat + dy)}`);
+    await Promise.all(
+      [...keys].filter((k) => !this.fine.has(k) && fm.tiles.includes(k)).map(async (k) => this.fine.set(k, await load(k).catch(() => null))),
+    );
+  }
+
+  /** Fine density at a point, or null where no fine tile is loaded. */
+  fineAt(lng: number, lat: number): number | null {
+    const fm = this.fineMeta;
+    if (!fm) return null;
+    const tx = Math.floor(lng);
+    const ty = Math.floor(lat);
+    const t = this.fine.get(`${tx}_${ty}`);
+    if (!t) return this.fineMeta?.tiles.includes(`${tx}_${ty}`) ? null : 0;
+    const x = Math.min(fm.tile - 1, Math.floor((lng - tx) / fm.res));
+    const y = Math.min(fm.tile - 1, Math.floor((ty + 1 - lat) / fm.res));
+    return this.decode(t[y * fm.tile + x]);
+  }
 
   /** Bears per km² in the cell containing the point (0 outside Romania). */
   densityAt(lng: number, lat: number): number {
@@ -44,7 +87,7 @@ export class BearGrid {
     return this.decode(this.data[y * width + x]);
   }
 
-  private decode(q: number): number {
+  decode(q: number): number {
     const e = this.meta.encoding;
     if (q === e.zero) return 0;
     return 10 ** (e.log10Min + ((q - 1) / e.steps) * (e.log10Max - e.log10Min));
@@ -56,6 +99,38 @@ export class BearGrid {
    * dominate a city street.
    */
   local(lng: number, lat: number, sigmaKm: number): number {
+    const f = this.localFine(lng, lat, sigmaKm);
+    return f ?? this.localCoarse(lng, lat, sigmaKm);
+  }
+
+  /** True when ~200 m data covers this point. */
+  hasFine(lng: number, lat: number): boolean {
+    return this.fineAt(lng, lat) !== null && this.fine.has(`${Math.floor(lng)}_${Math.floor(lat)}`);
+  }
+
+  private localFine(lng: number, lat: number, sigmaKm: number): number | null {
+    const fm = this.fineMeta;
+    if (!fm || !this.hasFine(lng, lat)) return null;
+    const kmY = fm.res * 111.32;
+    const kmX = fm.res * 111.32 * Math.cos((lat * Math.PI) / 180);
+    const r = 3 * sigmaKm;
+    let sw = 0;
+    let s = 0;
+    for (let dy = -r; dy <= r; dy += kmY) {
+      for (let dx = -r; dx <= r; dx += kmX) {
+        const w = Math.exp(-(dx * dx + dy * dy) / (2 * sigmaKm * sigmaKm));
+        if (w < 0.01) continue;
+        const d = this.fineAt(lng + dx / (111.32 * Math.cos((lat * Math.PI) / 180)), lat + dy / 111.32);
+        if (d === null) return null; // edge of loaded data: fall back to the 1 km grid
+        s += w * d;
+        sw += w;
+      }
+    }
+    void kmY;
+    return sw ? s / sw : 0;
+  }
+
+  localCoarse(lng: number, lat: number, sigmaKm: number): number {
     const { west, north, res, width, height } = this.meta;
     const kmY = res * 111.32;
     const kmX = res * 111.32 * Math.cos((lat * Math.PI) / 180);
@@ -115,7 +190,10 @@ export function loadBearGrid(): Promise<BearGrid> {
     const res = await fetchSafe(`${BASE_URL}bears/density.bin`, { timeoutMs: 30_000 });
     const data = new Uint8Array(await res.arrayBuffer());
     if (data.length !== meta.width * meta.height) throw new Error('Bear grid size mismatch');
-    return new BearGrid(meta, data);
+    const g = new BearGrid(meta, data);
+    const fm = await fetchJson<FineMeta>(`${BASE_URL}bears/fine.json`, { timeoutMs: 15_000 }).catch(() => null);
+    if (fm) g.setFineMeta(fm);
+    return g;
   })().catch((e) => {
     gridPromise = null;
     throw e;
@@ -304,12 +382,15 @@ export function assessBearRisk(grid: BearGrid, input: RiskInput): BearRisk {
   const base = season * LIGHT[light] * modeFactor;
   const at = (radiusKm: number): RadiusRisk => {
     const a = grid.area(input.lng, input.lat, radiusKm);
-    // 1 km: weighted towards exactly where you are; 10 km: the whole surrounding area.
-    const density = radiusKm <= 1 ? grid.local(input.lng, input.lat, 0.35) * (input.localFactor ?? 1) : a.density;
+    // 1 km: the ~200 m layer weighted around you (map outlines refine it where that layer is missing).
+    // 10 km: the surrounding area, nearer places weighing more.
+    const fine = radiusKm <= 1 && grid.hasFine(input.lng, input.lat);
+    const density = radiusKm <= 1 ? grid.local(input.lng, input.lat, 0.3) * (fine ? 1 : (input.localFactor ?? 1)) : grid.localCoarse(input.lng, input.lat, 3);
     const recent = input.sightings ? recentSightings(input.sightings, input.lng, input.lat, radiusKm) : 0;
     // A confirmed recent bear nearby raises the risk; capped so it can't dominate the census.
     const boost = Math.min(3, 1 + 0.6 * recent);
-    const index = riskIndex(density * base * boost);
+    // Time of day changes what's right around you, not how many bears live in the wider area.
+    const index = riskIndex(density * (radiusKm <= 1 ? base : season * modeFactor) * boost);
     return { index, level: riskLevel(index), density, bears: a.bears, recent };
   };
   return { r10: at(10), r1: at(1), season, light, modeFactor, liveData: !!input.sightings };
@@ -410,4 +491,10 @@ export function habitatFactor(lng: number, lat: number, forests: Poly[], built: 
   let factor = Math.max(0.3, Math.min(2.2, (forestNear + 0.15) / (forestWide + 0.15)));
   factor *= 1 - 0.75 * Math.max(0, Math.min(1, (builtNear - 0.3) / 0.6));
   return { forestNear, forestWide, builtNear, factor: Math.max(0.15, factor) };
+}
+
+/** Fetches one ~200 m tile (bears/fine/{lon}_{lat}.bin). */
+export async function loadFineTile(key: string): Promise<Uint8Array | null> {
+  const res = await fetchSafe(`${BASE_URL}bears/fine/${key}.bin`, { timeoutMs: 30_000 });
+  return new Uint8Array(await res.arrayBuffer());
 }
