@@ -24,7 +24,8 @@ const SAC: Record<string, number> = {
   difficult_alpine_hiking: 6,
 };
 
-const COLORS: Record<string, string> = {
+/** Paint colours of Romanian trail markings. */
+export const MARK_COLORS: Record<string, string> = {
   red: '#d7263d',
   blue: '#1f6fd1',
   yellow: '#f2c418',
@@ -44,7 +45,7 @@ export function parseOsmcSymbol(sym: string | undefined, colour?: string): Marki
   const parts = sym?.split(':') ?? [];
   const fg = parts[2] ?? '';
   const colorName = (fg.split('_')[0] || parts[0] || colour || '').toLowerCase();
-  const color = COLORS[colorName] ?? (colour?.startsWith('#') ? colour : undefined);
+  const color = MARK_COLORS[colorName] ?? (colour?.startsWith('#') ? colour : undefined);
   if (!color) return undefined;
   const shape = /stripe|bar/.test(fg)
     ? 'stripe'

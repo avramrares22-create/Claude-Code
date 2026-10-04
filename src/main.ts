@@ -1074,8 +1074,12 @@ function showBearRisk(on: boolean) {
   }
 }
 
+let turnMarker: maplibregl.Marker | null = null;
+
 function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'> & { segments?: Route['segments'] }) {
   stopNavigation(false);
+  const navStarted = Date.now();
+  let lastNext = -1;
   const { coords, elevations, duration } = route;
   const follower = new RouteFollower(coords, elevations, duration);
   const maneuvers = buildManeuvers(coords, route.segments ?? coords.slice(1).map(() => ({ wayId: 0, kind: 'path' })));
@@ -1113,6 +1117,22 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
     const next = maneuvers.find((m) => m.along > s.along + 3) ?? maneuvers[maneuvers.length - 1];
     const after = maneuvers[maneuvers.indexOf(next) + 1];
     const toNext = Math.max(0, next.along - s.along);
+    const k0 = maneuvers.indexOf(next);
+    if (k0 !== lastNext) {
+      lastNext = k0;
+      // New instruction: animate the banner and move the turn marker on the map.
+      hud.classList.remove('flip');
+      void hud.offsetWidth;
+      hud.classList.add('flip');
+      turnMarker?.remove();
+      turnMarker = null;
+      if (next.type !== 'arrive' && next.type !== 'depart' && next.type !== 'straight') {
+        const el = document.createElement('div');
+        el.className = 'turn-marker';
+        el.innerHTML = arrowSvg(next.type, 22);
+        turnMarker = new maplibregl.Marker({ element: el }).setLngLat(coords[Math.min(next.index, coords.length - 1)]).addTo(engine.map);
+      }
+    }
     hud.classList.toggle('off-route', s.offRoute);
     hud.innerHTML = s.offRoute
       ? `<div class="turn"><span class="turn-ico">${arrowSvg('uturn')}</span><div><div class="turn-dist">Off route</div><div class="turn-text">${Math.round(s.offset)} m from the trail</div></div>
@@ -1176,8 +1196,19 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
     if (!s.offRoute) warned = false;
     if (s.arrived) {
       speak('You have arrived at your destination.');
-      toast('You have arrived 🎉', { kind: 'success', ms: 5000 });
+      const took = (Date.now() - navStarted) / 1000;
       stopNavigation(true);
+      openSheet(
+        'info',
+        `<div class="arrive"><div class="arrive-ico">${arrowSvg('arrive', 34)}</div><h2>You have arrived</h2>
+         <div class="stats" style="grid-template-columns:repeat(3,1fr)">
+           <div class="stat"><b>${fmtKm(cum[cum.length - 1])}</b><small>distance</small></div>
+           <div class="stat"><b>${fmtTime(took)}</b><small>time</small></div>
+           <div class="stat"><b>↑${Math.round(route.elevations.reduce((a, e, i) => (i && e != null && route.elevations[i - 1] != null && e > route.elevations[i - 1]! ? a + e - route.elevations[i - 1]! : a), 0))}</b><small>m climbed</small></div>
+         </div>
+         <button class="btn primary block" id="arrive-done">Done</button></div>`,
+      );
+      q('#arrive-done')?.addEventListener('click', () => sheet.close());
     }
   });
 }
@@ -1200,6 +1231,8 @@ function stopNavigation(clear: boolean) {
   navBar.hidden = true;
   recenterBtn.hidden = true;
   showBearRisk(false);
+  turnMarker?.remove();
+  turnMarker = null;
   document.body.classList.remove('navigating');
   engine.map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
   if (!recording) void wake.release();

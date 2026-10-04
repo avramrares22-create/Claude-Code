@@ -1277,3 +1277,195 @@ body.navigating .sheet {
   font-size: 16px;
   box-shadow: 0 6px 18px rgba(255, 138, 31, 0.35);
 }
+
+/* ------------------------------------------------------------------ motion & finish */
+:root {
+  --spring: cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.btn,
+.fab,
+.nb-btn,
+.chip,
+.tab,
+.icon-btn {
+  transition:
+    transform 0.16s var(--ease-out),
+    background 0.2s,
+    color 0.2s,
+    box-shadow 0.2s,
+    opacity 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:active:not(:disabled),
+.fab:active,
+.nb-btn:active,
+.icon-btn:active {
+  transform: scale(0.95);
+}
+
+.tab:active {
+  transform: scale(0.92);
+}
+
+.btn.primary {
+  background: linear-gradient(180deg, #ffa043, var(--accent));
+  box-shadow:
+    0 6px 16px rgba(255, 138, 31, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.tab.active i {
+  animation: tab-pop 0.35s var(--spring);
+}
+
+@keyframes tab-pop {
+  40% {
+    transform: scale(1.18);
+  }
+}
+
+/* Sheet content rises in a gentle sequence whenever a sheet opens or changes. */
+.sheet:not([data-state='hidden']) .sheet-body > * {
+  animation: rise 0.34s var(--ease-out) both;
+}
+
+.sheet .sheet-body > *:nth-child(2) {
+  animation-delay: 30ms;
+}
+
+.sheet .sheet-body > *:nth-child(3) {
+  animation-delay: 60ms;
+}
+
+.sheet .sheet-body > *:nth-child(4) {
+  animation-delay: 90ms;
+}
+
+.sheet .sheet-body > *:nth-child(n + 5) {
+  animation-delay: 120ms;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.sheet {
+  transition:
+    transform 0.38s var(--spring),
+    max-height 0.32s var(--ease-out),
+    opacity 0.22s;
+}
+
+/* Navigation banner: slides in, flips on each new instruction. */
+.nav-hud:not([hidden]) {
+  animation: hud-in 0.4s var(--spring) both;
+}
+
+.nav-hud.flip .turn {
+  animation: flip-in 0.36s var(--ease-out) both;
+}
+
+@keyframes hud-in {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.98);
+  }
+}
+
+@keyframes flip-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+
+.nav-hud {
+  transition: background 0.35s;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.nav-bar:not([hidden]) {
+  animation: bar-in 0.4s var(--spring) both;
+}
+
+@keyframes bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+}
+
+.bear-risk:not([hidden]) {
+  animation: bar-in 0.45s var(--spring) 0.1s both;
+}
+
+.recenter:not([hidden]) {
+  animation: bar-in 0.3s var(--spring) both;
+}
+
+/* Turn marker on the map at the next maneuver. */
+.turn-marker {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #0e5c3e;
+  color: #fff;
+  border: 2.5px solid #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  animation: turn-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes turn-pulse {
+  50% {
+    box-shadow:
+      0 4px 12px rgba(0, 0, 0, 0.45),
+      0 0 0 8px rgba(255, 255, 255, 0.18);
+  }
+}
+
+/* Arrival card */
+.arrive {
+  text-align: center;
+}
+
+.arrive h2 {
+  margin: 8px 0 12px;
+}
+
+.arrive-ico {
+  display: inline-grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-top: 4px;
+  border-radius: 50%;
+  color: #fff;
+  background: radial-gradient(circle at 30% 30%, #39c46a, #1d7d43);
+  box-shadow: 0 10px 24px rgba(46, 158, 68, 0.4);
+  animation: tab-pop 0.6s var(--spring);
+}
+
+/* Toasts slide and fade like system notifications. */
+.toast {
+  transition:
+    transform 0.32s var(--spring),
+    opacity 0.25s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet .sheet-body > *,
+  .nav-hud,
+  .nav-bar,
+  .turn-marker,
+  .results li.res {
+    animation: none !important;
+  }
+}
