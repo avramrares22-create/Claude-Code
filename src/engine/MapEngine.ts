@@ -379,27 +379,27 @@ export class MapEngine {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': '#8a948e', 'line-width': width(3.6), 'line-opacity': 0.85 },
     });
-    // The way to follow: soft glow, white casing, bold orange, direction chevrons.
+    // The way to follow: Google-style blue with a darker outline and direction chevrons.
     m.addLayer({
       id: 'route-glow',
       type: 'line',
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ff7a00', 'line-width': width(10), 'line-blur': 6, 'line-opacity': 0.35 },
+      paint: { 'line-color': '#1a73e8', 'line-width': width(9), 'line-blur': 6, 'line-opacity': 0.25 },
     });
     m.addLayer({
       id: 'route-casing',
       type: 'line',
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffffff', 'line-width': width(5.2) },
+      paint: { 'line-color': '#0b57d0', 'line-width': width(5.2) },
     });
     m.addLayer({
       id: 'route-line',
       type: 'line',
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ff7a00', 'line-width': width(3.6) },
+      paint: { 'line-color': '#4285f4', 'line-width': width(3.8) },
     });
     m.addLayer({
       id: 'route-arrows',

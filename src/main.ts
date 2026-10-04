@@ -27,6 +27,9 @@ import {
   type BaseMode,
 } from './engine';
 import {
+  habitatFactor,
+  type HabitatSample,
+  type Poly,
   assessBearRisk,
   BEAR_SAFETY_TIPS,
   fetchSightings,
@@ -354,7 +357,7 @@ async function selectItem(p: SearchItem) {
   searchInput.blur();
   closeResults();
   searchMarker?.remove();
-  searchMarker = new maplibregl.Marker({ color: '#ff8a1f' }).setLngLat(p.lngLat).addTo(engine.map);
+  searchMarker = new maplibregl.Marker({ color: '#ea4335' }).setLngLat(p.lngLat).addTo(engine.map);
   const sheetPad = panelPadding(0.42);
   if (p.bbox && p.bbox[2] - p.bbox[0] > 0.002 && p.cat !== 'river') engine.map.fitBounds(p.bbox, { padding: sheetPad, maxZoom: p.zoom, duration: 900 });
   else engine.map.flyTo({ center: p.lngLat, zoom: p.zoom, essential: true, padding: sheetPad, duration: 1100 });
@@ -416,6 +419,23 @@ searchInput.addEventListener('input', () => {
     });
   }, 120);
 });
+// Google-Maps-style quick chips under the search bar: one tap shows the nearest of a kind.
+const quickChips = $('quick-chips');
+quickChips.innerHTML = CHIPS.slice(0, 8)
+  .map(([label, cats], i) => `<button class="qchip" data-q="${i}"><span class="qchip-ico">${CAT_ICON(cats[0])()}</span>${label}</button>`)
+  .join('');
+quickChips.querySelectorAll<HTMLButtonElement>('[data-q]').forEach((b) =>
+  b.addEventListener('click', async () => {
+    const i = Number(b.dataset.q);
+    const [label, cats] = CHIPS[i];
+    const { focus } = searchFocus();
+    const r = await browse(cats, focus).catch(() => null);
+    renderItems((r?.results ?? []).map(fromLocal), chipsHtml(i), r ? `No ${label.toLowerCase()} nearby` : 'Search data is still loading…');
+  }),
+);
+setIcon('fab-go', icons.route(24));
+$('fab-go').addEventListener('click', () => $('tab-route').click());
+
 searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && shown[0]) void selectItem(shown[0]);
   if (e.key === 'Escape') {
@@ -973,15 +993,97 @@ recenterBtn.className = 'recenter glass';
 recenterBtn.hidden = true;
 recenterBtn.innerHTML = `${icons.compass(18)} Recenter`;
 document.body.append(recenterBtn);
-recenterBtn.addEventListener('click', () => {
+recenterBtn.innerHTML = `${icons.locate(18)} Re-center`;
+
+/**
+ * Navigation camera, Google-Maps style: glides between GPS fixes every frame,
+ * heading-up and tilted, zoom by speed. Panning/rotating pauses it (Re-center
+ * appears) and it resumes by itself a few seconds after you let go; pinch-zoom
+ * keeps following at your chosen zoom.
+ */
+const navCam = {
+  from: null as [number, number] | null,
+  to: null as [number, number] | null,
+  fromBearing: 0,
+  toBearing: 0,
+  t0: 0,
+  dur: 1000,
+  speed: 0,
+  userZoom: null as number | null,
+  resumeTimer: 0,
+  raf: 0,
+};
+const lerpAngle = (a: number, b: number, t: number) => a + ((((b - a + 540) % 360) - 180) * t);
+function camPos(now: number): { p: [number, number]; b: number } | null {
+  if (!navCam.to) return null;
+  const t = Math.min(1, (now - navCam.t0) / navCam.dur);
+  const e = t * (2 - t); // ease-out
+  const f = navCam.from ?? navCam.to;
+  return { p: [f[0] + (navCam.to[0] - f[0]) * e, f[1] + (navCam.to[1] - f[1]) * e], b: lerpAngle(navCam.fromBearing, navCam.toBearing, e) };
+}
+function navCamFrame() {
+  navCam.raf = requestAnimationFrame(navCamFrame);
+  if (!navActive || !navFollow) return;
+  const c = camPos(performance.now());
+  if (!c) return;
+  userMarker?.setLngLat(c.p);
+  // Walking ~17.5, cycling ~16.8, driving ~16.
+  const speedZoom = navCam.speed > 9 ? 16 : navCam.speed > 3.5 ? 16.8 : 17.5;
+  engine.map.jumpTo({
+    center: c.p,
+    bearing: c.b,
+    pitch: 55,
+    zoom: navCam.userZoom ?? speedZoom,
+    padding: isLandscape() ? { top: window.innerHeight * 0.3, bottom: 40, left: 360, right: 0 } : { top: window.innerHeight * 0.38, bottom: 150, left: 0, right: 0 },
+  });
+}
+function navCamFeed(pos: [number, number], bearing: number, speed: number | null) {
+  const now = performance.now();
+  const cur = camPos(now);
+  navCam.from = cur?.p ?? pos;
+  navCam.fromBearing = cur?.b ?? bearing;
+  navCam.to = pos;
+  navCam.toBearing = bearing;
+  // Glide over roughly the interval between fixes (iOS: ~1 s while moving).
+  navCam.dur = Math.max(500, Math.min(1500, navCam.t0 ? now - navCam.t0 : 1000));
+  navCam.t0 = now;
+  if (speed != null && speed >= 0) navCam.speed = navCam.speed * 0.6 + speed * 0.4;
+}
+function resumeFollow() {
+  clearTimeout(navCam.resumeTimer);
   navFollow = true;
   recenterBtn.hidden = true;
+}
+recenterBtn.addEventListener('click', () => {
+  navCam.userZoom = null;
+  resumeFollow();
 });
-engine.map.on('dragstart', () => {
+// Any touch on the map pauses following at once (so panning/pinching works), and it
+// resumes by itself 6 s after the last finger lifts — keeping a zoom you pinched to.
+const mapEl = engine.map.getCanvasContainer();
+let zoomAtTouch = 0;
+const pauseFollow = () => {
   if (!navActive) return;
+  clearTimeout(navCam.resumeTimer);
+  if (navFollow) zoomAtTouch = engine.map.getZoom();
   navFollow = false;
   recenterBtn.hidden = false;
-});
+};
+const scheduleResume = () => {
+  if (!navActive || navFollow) return;
+  clearTimeout(navCam.resumeTimer);
+  navCam.resumeTimer = window.setTimeout(() => {
+    if (Math.abs(engine.map.getZoom() - zoomAtTouch) > 0.15) navCam.userZoom = engine.map.getZoom();
+    resumeFollow();
+  }, 6000);
+};
+mapEl.addEventListener('pointerdown', pauseFollow);
+mapEl.addEventListener('pointerup', scheduleResume);
+mapEl.addEventListener('pointercancel', scheduleResume);
+mapEl.addEventListener('wheel', () => {
+  pauseFollow();
+  scheduleResume();
+}, { passive: true });
 
 const ARROW: Record<TurnType, string> = {
   depart: 'M12 20V5M6 11l6-6 6 6',
@@ -1035,7 +1137,49 @@ const bear = {
   lastLevel: '' as string,
   fetching: false,
   triedAt: 0,
+  habitat: null as HabitatSample | null,
 };
+
+/** Forest and built-up outlines around a point from the loaded map tiles (works offline too). */
+function localHabitat(lng: number, lat: number): HabitatSample | null {
+  const m = engine.map;
+  if (!m.getSource('reference')) return null;
+  const pad = 0.025;
+  // Big forests start far away: test the outline's extent, not its first corner.
+  const near = (g: GeoJSON.Geometry) => {
+    const rings = g.type === 'Polygon' ? [g.coordinates[0]] : g.type === 'MultiPolygon' ? g.coordinates.map((p) => p[0]) : [];
+    for (const r of rings) {
+      let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+      for (const [x, y] of r) {
+        if (x < a) a = x;
+        if (y < b) b = y;
+        if (x > c) c = x;
+        if (y > d) d = y;
+      }
+      if (a < lng + pad * 1.4 && c > lng - pad * 1.4 && b < lat + pad && d > lat - pad) return true;
+    }
+    return false;
+  };
+  const polys = (sourceLayer: string, filter?: maplibregl.FilterSpecification): Poly[] => {
+    const out: Poly[] = [];
+    try {
+      for (const f of m.querySourceFeatures('reference', { sourceLayer, filter })) {
+        const g = f.geometry;
+        if (!near(g)) continue;
+        if (g.type === 'Polygon') out.push(g.coordinates as Poly);
+        else if (g.type === 'MultiPolygon') for (const p of g.coordinates) out.push(p as Poly);
+      }
+    } catch {
+      // tiles not loaded yet
+    }
+    return out;
+  };
+  const forests = polys('landcover', ['==', ['get', 'class'], 'wood']);
+  const built = [...polys('landuse', ['in', ['get', 'class'], ['literal', ['residential', 'commercial', 'industrial', 'retail']]]), ...polys('building')];
+  // No detailed tiles here yet: keep the census estimate. (Loaded but empty = open mountain, 0% forest.)
+  if (!forests.length && !built.length && (m.getZoom() < 10 || !m.isSourceLoaded('reference'))) return null;
+  return habitatFactor(lng, lat, forests, built);
+}
 bearBox.addEventListener('click', () => {
   bear.expanded = !bear.expanded;
   renderBear();
@@ -1066,8 +1210,9 @@ function renderBear() {
     ${
       bear.expanded
         ? `<div class="br-more">
-        <p>≈ <b>${Math.round(r.r10.bears)}</b> bears live within 10 km (2025 genetic census, spread over habitat).</p>
+        <p><b>10 km</b> is the whole area around you, forests included: ≈ <b>${Math.round(r.r10.bears)}</b> bears live within 10 km (2025 genetic census). <b>1 km</b> is weighted to exactly where you are, so it drops in town and rises at forest edges.</p>
         <p>${esc(live)}</p>
+        ${bear.habitat ? `<p>Right here: <b>${Math.round(bear.habitat.forestNear * 100)}%</b> forest within 500 m · <b>${Math.round(bear.habitat.builtNear * 100)}%</b> built-up within 300 m.</p>` : ''}
         <p>Now: ${seasonText(r.season)} · ${LIGHT_TEXT[r.light]}${r.modeFactor > 1 ? ' · riding fast and quiet surprises bears more' : r.modeFactor < 1 ? ' · engine noise warns bears off' : ''}.</p>
         <ul>${BEAR_SAFETY_TIPS.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
         <p class="br-note">A 1–100 estimate of how likely you are to meet a bear, from public data. It can't see individual bears, and a low number never means "no bears". Tap to close.</p>
@@ -1109,7 +1254,8 @@ async function updateBearRisk(f: Fix, mode: string) {
   } catch {
     return;
   }
-  bear.risk = assessBearRisk(grid, { lng: f.lng, lat: f.lat, mode, sightings: bear.sightings ?? undefined });
+  bear.habitat = localHabitat(f.lng, f.lat);
+  bear.risk = assessBearRisk(grid, { lng: f.lng, lat: f.lat, mode, sightings: bear.sightings ?? undefined, localFactor: bear.habitat?.factor });
   bear.computedAt = Date.now();
   bear.computedFrom = here;
   renderBear();
@@ -1147,6 +1293,12 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
   const spokenStage = new Map<number, number>(); // maneuver index → last announced stage (2 far, 1 near, 0 now)
   navActive = true;
   navFollow = true;
+  navCam.from = navCam.to = null;
+  navCam.t0 = 0;
+  navCam.userZoom = null;
+  navCam.speed = 0;
+  cancelAnimationFrame(navCam.raf);
+  navCam.raf = requestAnimationFrame(navCamFrame);
   engine.scanFocus = coords[0];
   document.body.classList.add('navigating');
   sheet.close();
@@ -1160,11 +1312,13 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
   hud.innerHTML = `<div class="turn"><span class="turn-ico">${arrowSvg('depart')}</span><div><div class="turn-dist">Waiting for GPS…</div><div class="turn-text">${esc(maneuvers[0]?.text ?? '')}</div></div></div>`;
   speak(maneuvers[0] ? `${maneuvers[0].spoken}.` : 'Starting navigation');
   let lastBearing = engine.map.getBearing();
+  let firstHeading = true;
   let warned = false;
   const dest = coords[coords.length - 1];
 
   navUnsub = location.subscribe((f) => {
-    showUser(f);
+    // While following, the camera loop moves the dot smoothly; otherwise show the raw fix.
+    if (!userMarker || !navFollow) showUser(f);
     engine.scanFocus = [f.lng, f.lat];
     void updateBearRisk(f, routing.prefs.mode);
     const s = follower.update(f.lng, f.lat, f.accuracy);
@@ -1223,8 +1377,8 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
       speak(announce(next, toNext));
     }
 
-    // Camera: heading-up, tilted, user low on screen — like car navigation.
-    if (navFollow) {
+    // Camera: heading-up, tilted, user low on screen — fed to the per-frame follow camera.
+    {
       const ahead = (() => {
         const target = s.along + 40;
         let i = seg;
@@ -1233,20 +1387,12 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
       })();
       const kx = Math.cos((f.lat * Math.PI) / 180);
       let b = (Math.atan2((ahead[0] - s.snapped[0]) * kx, ahead[1] - s.snapped[1]) * 180) / Math.PI;
-      // Smooth the heading to avoid jitter from GPS noise.
-      const diff = ((b - lastBearing + 540) % 360) - 180;
-      b = lastBearing + diff * 0.5;
+      // Smooth the heading to avoid jitter from GPS noise (the first fix snaps straight to it).
+      if (firstHeading) firstHeading = false;
+      else b = lastBearing + ((((b - lastBearing + 540) % 360) - 180) * 0.5);
       lastBearing = b;
-      engine.map.easeTo({
-        center: [f.lng, f.lat],
-        bearing: b,
-        pitch: 55,
-        zoom: Math.max(16, Math.min(17.5, engine.map.getZoom())),
-        // Your position sits low in the free map area (right of the left column when sideways).
-        padding: isLandscape() ? { top: window.innerHeight * 0.3, bottom: 40, left: 360, right: 0 } : { top: window.innerHeight * 0.35, bottom: 120, left: 0, right: 0 },
-        duration: 900,
-        easing: (t) => t,
-      });
+      // Show you on the route (snapped) while on it, at your real position when off it.
+      navCamFeed(s.offRoute ? [f.lng, f.lat] : s.snapped, b, f.speed);
     }
 
     if (s.offRoute && !warned) {
@@ -1293,6 +1439,8 @@ function stopNavigation(clear: boolean) {
   showBearRisk(false);
   turnMarker?.remove();
   turnMarker = null;
+  cancelAnimationFrame(navCam.raf);
+  clearTimeout(navCam.resumeTimer);
   document.body.classList.remove('navigating');
   engine.map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
   if (!recording) void wake.release();

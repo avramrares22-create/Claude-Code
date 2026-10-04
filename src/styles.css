@@ -1783,3 +1783,436 @@ body.navigating .sheet {
     pointer-events: auto;
   }
 }
+
+/* ================================================================== Google-Maps-style design layer
+ * Material 3 look: solid surfaces with soft elevation, blue primary, pill
+ * buttons, docked navigation bar, full-width bottom sheets, quick chips. */
+:root {
+  --accent: #a8c7fa;
+  --accent-ink: #062e6f;
+  --accent-soft: #004a77;
+  --on-accent-soft: #c2e7ff;
+  --surface: #1f1f1f;
+  --surface-solid: #1f1f1f;
+  --surface-2: #2a2b2c;
+  --surface-3: #333537;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e3e3e3;
+  --muted: #c4c7c5;
+  --faint: #8e918f;
+  --good: #6dd58c;
+  --nav-green: #146c2e;
+  --nav-green-2: #0f5223;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  --elev-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+  --elev-3: 0 4px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow: var(--elev-2);
+  --tabbar-h: 72px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --accent: #0b57d0;
+    --accent-ink: #ffffff;
+    --accent-soft: #d3e3fd;
+    --on-accent-soft: #041e49;
+    --surface: #ffffff;
+    --surface-solid: #ffffff;
+    --surface-2: #f0f4f9;
+    --surface-3: #e9eef6;
+    --border: rgba(0, 0, 0, 0.08);
+    --text: #1f1f1f;
+    --muted: #444746;
+    --faint: #747775;
+    --good: #188038;
+    --nav-green: #137333;
+    --nav-green-2: #0d652d;
+    --elev-1: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+    --elev-2: 0 1px 2px rgba(60, 64, 67, 0.3), 0 2px 6px 2px rgba(60, 64, 67, 0.15);
+    --elev-3: 0 4px 8px 3px rgba(60, 64, 67, 0.15), 0 1px 3px rgba(60, 64, 67, 0.3);
+  }
+}
+
+/* Solid material surfaces instead of glass */
+.glass {
+  background: var(--surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0;
+  box-shadow: var(--elev-2);
+}
+
+h2,
+.sheet h2 {
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* ---- search bar: white pill */
+.search {
+  height: 52px;
+  padding: 0 6px 0 16px;
+  border-radius: 28px;
+  box-shadow: var(--elev-2);
+}
+
+.search input::placeholder {
+  color: var(--muted);
+}
+
+.results {
+  border-radius: 24px;
+  margin-top: 8px;
+  padding: 6px 4px;
+}
+
+.results .ico {
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.results li button.res-go {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+.results li.chips button.chip.on {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+/* ---- quick chips under the search bar */
+.quick-chips {
+  display: flex;
+  gap: 8px;
+  margin: 10px -12px 0;
+  padding: 2px 12px 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.quick-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.qchip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px 0 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: var(--elev-1);
+  transition: transform 0.15s, background 0.2s;
+}
+
+.qchip:active {
+  transform: scale(0.95);
+  background: var(--surface-2);
+}
+
+.qchip-ico {
+  display: flex;
+  color: var(--muted);
+}
+
+.qchip-ico svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Chips hide while results show, a panel is open, or navigating */
+.topbar:has(.results:not([hidden])) .quick-chips,
+body.sheet-open .quick-chips,
+body.navigating .quick-chips {
+  display: none;
+}
+
+/* ---- buttons: Material pills */
+.btn {
+  height: 44px;
+  padding: 0 20px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+  font-weight: 600;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+
+.btn.primary:active:not(:disabled) {
+  box-shadow: var(--elev-1);
+}
+
+.start-btn {
+  height: 48px;
+  box-shadow: var(--elev-1);
+}
+
+.route-head h2 {
+  color: var(--good);
+  font-weight: 600;
+}
+
+.seg {
+  background: transparent;
+  gap: 8px;
+  padding: 0;
+}
+
+.seg button {
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-weight: 500;
+}
+
+.seg button.on {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.stat {
+  background: var(--surface-2);
+  border-radius: 16px;
+}
+
+.chip.on {
+  border-color: transparent !important;
+  background: var(--accent-soft) !important;
+  color: var(--on-accent-soft);
+}
+
+.maptype.on {
+  border-color: var(--accent);
+}
+
+.place-ico {
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+/* ---- floating buttons: Google squircles + blue directions button */
+.fab {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--elev-3);
+}
+
+.fab-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  align-self: flex-end;
+  color: var(--muted);
+}
+
+.fab.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.fab-go {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.fabs {
+  gap: 12px;
+  align-items: flex-end;
+}
+
+/* ---- tab bar: Material navigation bar with pill indicator */
+.tab {
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.tab i {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 30px;
+  border-radius: 999px;
+  transition: background 0.25s var(--ease-out, ease);
+}
+
+.tab.active {
+  background: transparent;
+  color: var(--text);
+}
+
+.tab.active i {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+.tab-primary i {
+  width: 56px;
+  height: 30px;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+}
+
+.tab-primary.busy i {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+/* ---- sheets */
+.sheet-grip span {
+  width: 32px;
+  height: 4px;
+  background: var(--faint);
+  opacity: 0.6;
+}
+
+.sheet-close {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+/* ---- navigation */
+.nav-hud {
+  background: var(--nav-green);
+  box-shadow: var(--elev-3);
+}
+
+.nav-hud .then {
+  background: var(--nav-green-2);
+}
+
+.nav-hud.off-route {
+  background: #b3261e;
+}
+
+.nav-bar {
+  background: var(--surface);
+  box-shadow: var(--elev-3);
+}
+
+.nb-main b {
+  color: var(--good);
+  font-weight: 600;
+  font-size: 24px;
+}
+
+.nav-bar .btn {
+  background: #b3261e;
+  color: #fff;
+}
+
+.nb-btn {
+  border-radius: 50%;
+  background: var(--surface-2);
+}
+
+.recenter {
+  background: var(--surface);
+  color: var(--accent);
+  border-radius: 999px;
+  box-shadow: var(--elev-3);
+  font-weight: 600;
+}
+
+.turn-marker {
+  background: var(--nav-green);
+}
+
+.bear-risk {
+  border-radius: 20px;
+}
+
+/* ---- portrait: docked navigation bar and full-width sheets (landscape keeps its side column) */
+@media (orientation: portrait), (min-height: 521px) {
+  .tabbar {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-width: none;
+    height: calc(var(--tabbar-h) + var(--safe-bottom));
+    padding: 6px 4px calc(var(--safe-bottom) + 6px);
+    border-radius: 0;
+    background: var(--surface);
+    box-shadow: 0 -1px 0 var(--border), 0 -2px 8px rgba(0, 0, 0, 0.08);
+  }
+
+  .sheet {
+    left: 0;
+    right: 0;
+    max-width: none;
+    bottom: calc(var(--safe-bottom) + var(--tabbar-h));
+    border-radius: 28px 28px 0 0;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.18);
+  }
+
+  .fabs {
+    right: 14px;
+    bottom: calc(var(--safe-bottom) + var(--tabbar-h) + 18px);
+  }
+
+  .maplibregl-ctrl-bottom-left,
+  .maplibregl-ctrl-bottom-right {
+    bottom: calc(var(--safe-bottom) + var(--tabbar-h) + 6px);
+  }
+
+  /* Map credits sit left of the floating buttons, not under them */
+  .maplibregl-ctrl-bottom-right {
+    right: 84px;
+  }
+
+  .topbar {
+    left: 12px;
+    right: 12px;
+    max-width: none;
+  }
+
+  .maplibregl-ctrl-top-right {
+    top: calc(var(--safe-top) + 112px);
+  }
+
+  /* Navigation: trip card docked at the bottom like Google's */
+  .nav-bar {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-width: none;
+    border-radius: 28px 28px 0 0;
+    padding: 16px 16px calc(var(--safe-bottom) + 16px) 22px;
+  }
+
+  .recenter {
+    left: 14px;
+    transform: none;
+    bottom: calc(var(--safe-bottom) + 112px);
+  }
+
+  .bear-risk {
+    bottom: calc(var(--safe-bottom) + 112px);
+  }
+}
+
+@media (min-width: 560px) and (orientation: portrait) {
+  .topbar {
+    max-width: 520px;
+  }
+}

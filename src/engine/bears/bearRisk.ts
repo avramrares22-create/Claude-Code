@@ -50,6 +50,33 @@ export class BearGrid {
     return 10 ** (e.log10Min + ((q - 1) / e.steps) * (e.log10Max - e.log10Min));
   }
 
+  /**
+   * Density right around you: a distance-weighted mean (Gaussian, σ = sigmaKm),
+   * so the place you stand on counts most and a forest edge 900 m away doesn't
+   * dominate a city street.
+   */
+  local(lng: number, lat: number, sigmaKm: number): number {
+    const { west, north, res, width, height } = this.meta;
+    const kmY = res * 111.32;
+    const kmX = res * 111.32 * Math.cos((lat * Math.PI) / 180);
+    const cx = (lng - west) / res;
+    const cy = (north - lat) / res;
+    const r = 3 * sigmaKm;
+    let sw = 0;
+    let s = 0;
+    for (let y = Math.floor(cy - r / kmY); y <= Math.floor(cy + r / kmY); y++) {
+      for (let x = Math.floor(cx - r / kmX); x <= Math.floor(cx + r / kmX); x++) {
+        const dx = (x + 0.5 - cx) * kmX;
+        const dy = (y + 0.5 - cy) * kmY;
+        const w = Math.exp(-(dx * dx + dy * dy) / (2 * sigmaKm * sigmaKm));
+        const d = x < 0 || y < 0 || x >= width || y >= height ? 0 : this.decode(this.data[y * width + x]);
+        s += w * d;
+        sw += w;
+      }
+    }
+    return sw ? s / sw : 0;
+  }
+
   /** Mean density (bears/km²) and expected number of bears within `radiusKm`. */
   area(lng: number, lat: number, radiusKm: number): { density: number; bears: number; peak: number } {
     const { west, north, res, width, height } = this.meta;
@@ -217,9 +244,13 @@ export async function fetchSightings(lng: number, lat: number, signal?: AbortSig
 
 // ------------------------------------------------------------------ index
 
-/** Densities mapped to 1 and 100: 1 bear per 500 km² … 1.5 bears per km² (log scale). */
+/**
+ * Densities mapped to 1 and 100 (log scale): 1 bear per 500 km² … 3 bears per km².
+ * Calibrated so Brașov county's average (~0.3/km², Europe's highest) reads "High",
+ * and "Very high" is kept for real hotspots and dusk/autumn peaks there.
+ */
 const D_LOW = 0.002;
-const D_HIGH = 1.5;
+const D_HIGH = 3;
 
 export function riskIndex(effectiveDensity: number): number {
   if (!(effectiveDensity > 0)) return 1;
@@ -241,6 +272,8 @@ export interface RiskInput {
   when?: Date;
   mode?: string;
   sightings?: Sighting[];
+  /** Fine-scale habitat multiplier for the 1 km reading (from map outlines), see habitatFactor. */
+  localFactor?: number;
 }
 
 export interface RadiusRisk {
@@ -271,8 +304,8 @@ export function assessBearRisk(grid: BearGrid, input: RiskInput): BearRisk {
   const base = season * LIGHT[light] * modeFactor;
   const at = (radiusKm: number): RadiusRisk => {
     const a = grid.area(input.lng, input.lat, radiusKm);
-    // For 1 km, the busiest nearby cell matters (a ravine or forest edge next to you).
-    const density = radiusKm <= 1 ? 0.5 * a.density + 0.5 * a.peak : a.density;
+    // 1 km: weighted towards exactly where you are; 10 km: the whole surrounding area.
+    const density = radiusKm <= 1 ? grid.local(input.lng, input.lat, 0.35) * (input.localFactor ?? 1) : a.density;
     const recent = input.sightings ? recentSightings(input.sightings, input.lng, input.lat, radiusKm) : 0;
     // A confirmed recent bear nearby raises the risk; capped so it can't dominate the census.
     const boost = Math.min(3, 1 + 0.6 * recent);
@@ -290,3 +323,91 @@ export const BEAR_SAFETY_TIPS = [
   'If you meet a bear: stay calm, don’t run, speak firmly and back away slowly.',
   'Carry bear spray where allowed and know how to use it. In an emergency call 112.',
 ];
+
+// ------------------------------------------------------------------ fine-scale habitat (metres, not km)
+
+/** A polygon ring set in lng/lat ([outer, ...holes]). */
+export type Poly = Array<Array<[number, number]>>;
+
+function inRing(x: number, y: number, ring: Array<[number, number]>): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function inPoly(x: number, y: number, p: Poly): boolean {
+  if (!p.length || !inRing(x, y, p[0])) return false;
+  for (let h = 1; h < p.length; h++) if (inRing(x, y, p[h])) return false;
+  return true;
+}
+
+export interface HabitatSample {
+  /** Share of forest within 500 m and within 1.5 km. */
+  forestNear: number;
+  forestWide: number;
+  /** Share of built-up land / buildings within 300 m. */
+  builtNear: number;
+  /** Multiplier for the 1 km reading (1 = no change). */
+  factor: number;
+}
+
+/**
+ * Refines the ~1 km census grid with exact forest and built-up outlines from
+ * the map tiles: bears live in and next to forest and rarely walk dense
+ * streets. Sampled on a 100 m lattice out to 1.5 km.
+ */
+export function habitatFactor(lng: number, lat: number, forests: Poly[], built: Poly[]): HabitatSample {
+  const kx = 111.32 * Math.cos((lat * Math.PI) / 180);
+  const step = 0.1; // km
+  const bbox = (p: Poly) => {
+    let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+    for (const [x, y] of p[0]) {
+      if (x < a) a = x;
+      if (y < b) b = y;
+      if (x > c) c = x;
+      if (y > d) d = y;
+    }
+    return [a, b, c, d] as const;
+  };
+  const fb = forests.map(bbox);
+  const bb = built.map(bbox);
+  const hit = (x: number, y: number, ps: Poly[], boxes: ReadonlyArray<readonly [number, number, number, number]>) => {
+    for (let i = 0; i < ps.length; i++) {
+      const b = boxes[i];
+      if (x < b[0] || x > b[2] || y < b[1] || y > b[3]) continue;
+      if (inPoly(x, y, ps[i])) return true;
+    }
+    return false;
+  };
+  let fN = 0, nN = 0, fW = 0, nW = 0, bN = 0, nB = 0;
+  for (let dy = -1.5; dy <= 1.5001; dy += step) {
+    for (let dx = -1.5; dx <= 1.5001; dx += step) {
+      const r = Math.hypot(dx, dy);
+      if (r > 1.5) continue;
+      const x = lng + dx / kx;
+      const y = lat + dy / 111.32;
+      const f = hit(x, y, forests, fb) ? 1 : 0;
+      fW += f;
+      nW++;
+      if (r <= 0.5) {
+        fN += f;
+        nN++;
+      }
+      if (r <= 0.3) {
+        bN += hit(x, y, built, bb) ? 1 : 0;
+        nB++;
+      }
+    }
+  }
+  const forestNear = nN ? fN / nN : 0;
+  const forestWide = nW ? fW / nW : 0;
+  const builtNear = nB ? bN / nB : 0;
+  // More forest right here than in the wider area → higher; town around you → lower.
+  let factor = Math.max(0.3, Math.min(2.2, (forestNear + 0.15) / (forestWide + 0.15)));
+  factor *= 1 - 0.75 * Math.max(0, Math.min(1, (builtNear - 0.3) / 0.6));
+  return { forestNear, forestWide, builtNear, factor: Math.max(0.15, factor) };
+}

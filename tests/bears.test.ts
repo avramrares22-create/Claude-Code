@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { assessBearRisk, BearGrid, chanceWithin, lightPhase, riskIndex, sunElevation, type BearGridMeta } from '../src/engine/bears/bearRisk';
+import { assessBearRisk, BearGrid, chanceWithin, habitatFactor, lightPhase, riskIndex, sunElevation, type BearGridMeta, type Poly } from '../src/engine/bears/bearRisk';
 
 const meta = JSON.parse(readFileSync('public/bears/density.json', 'utf8')) as BearGridMeta;
 const grid = new BearGrid(meta, new Uint8Array(readFileSync('public/bears/density.bin')));
@@ -47,7 +47,8 @@ describe('bear risk helpers', () => {
   it('index is monotonic and bounded', () => {
     expect(riskIndex(0)).toBe(1);
     expect(riskIndex(0.002)).toBe(1);
-    expect(riskIndex(1.5)).toBe(100);
+    expect(riskIndex(3)).toBe(100);
+    expect(riskIndex(0.3)).toBeLessThan(70); // Brașov county average reads High, not Very high
     expect(riskIndex(100)).toBe(100);
     expect(riskIndex(0.3)).toBeGreaterThan(riskIndex(0.05));
   });
@@ -66,5 +67,18 @@ describe('bear risk helpers', () => {
     expect(p1).toBeLessThan(0.02);
     expect(p10).toBeGreaterThan(0.3);
     expect(chanceWithin(s, 27.5, 44.5, 10)).toBe(0); // far away
+  });
+});
+
+describe('fine-scale habitat', () => {
+  const sq = (x0: number, y0: number, x1: number, y1: number): Poly => [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]];
+  const p = { lng: 25.6, lat: 45.64 };
+  it('raises the 1 km reading at a forest edge and lowers it in town', () => {
+    const forestHere = habitatFactor(p.lng, p.lat, [sq(25.592, 45.635, 25.608, 45.645)], []);
+    const forestFar = habitatFactor(p.lng, p.lat, [sq(25.615, 45.63, 25.625, 45.65)], [sq(25.594, 45.636, 25.606, 45.644)]);
+    expect(forestHere.forestNear).toBeGreaterThan(0.9);
+    expect(forestHere.factor).toBeGreaterThan(1.5);
+    expect(forestFar.builtNear).toBeGreaterThan(0.9);
+    expect(forestFar.factor).toBeLessThan(0.5);
   });
 });
