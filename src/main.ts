@@ -975,3 +975,96 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
 
 // Handy for debugging from the console.
 (window as unknown as { engine: MapEngine }).engine = engine;
+
+// ================================================================== long-press: point info
+
+/** Long-press (touch) or right-click shows the spot's coordinates/elevation and routing actions. */
+function pointSheet(lngLat: [number, number]) {
+  if (navActive) return;
+  const ele = engine.elevation.get(...lngLat);
+  const coord = `${lngLat[1].toFixed(5)}, ${lngLat[0].toFixed(5)}`;
+  openSheet(
+    'info',
+    `<h2>Dropped pin</h2><div class="sub">${coord}${ele !== null ? ` · ${Math.round(ele)} m` : ''}</div>
+     <div class="btns"><button class="btn primary" id="pt-to">${icons.route(18)} Route here</button><button class="btn" id="pt-from">Start here</button></div>
+     <button class="btn block" id="pt-copy">Copy coordinates</button>`,
+  );
+  if (ele === null) {
+    void engine.elevation
+      .prepare([lngLat[0] - 0.001, lngLat[1] - 0.001, lngLat[0] + 0.001, lngLat[1] + 0.001])
+      .then(() => {
+        const e = engine.elevation.get(...lngLat);
+        const sub = q('.sub');
+        if (e !== null && sub && sheetOwner === 'info') sub.textContent = `${coord} · ${Math.round(e)} m`;
+      })
+      .catch(() => {});
+  }
+  q('#pt-to')!.addEventListener('click', () => routeTo(lngLat));
+  q('#pt-from')!.addEventListener('click', () => {
+    startRouting();
+    routing.from = lngLat;
+    addMarker(lngLat, '#2e9e44');
+    routePrompt();
+  });
+  q('#pt-copy')!.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(coord);
+      toast('Coordinates copied', { kind: 'success', ms: 1500 });
+    } catch {
+      toast(coord, { ms: 5000 });
+    }
+  });
+}
+
+{
+  const canvas = engine.map.getCanvasContainer();
+  let timer: number | undefined;
+  let start: { x: number; y: number } | null = null;
+  const cancel = () => {
+    clearTimeout(timer);
+    start = null;
+  };
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return cancel();
+    const t = e.touches[0];
+    start = { x: t.clientX, y: t.clientY };
+    timer = window.setTimeout(() => {
+      if (!start) return;
+      const r = canvas.getBoundingClientRect();
+      const ll = engine.map.unproject([start.x - r.left, start.y - r.top]);
+      pointSheet([ll.lng, ll.lat]);
+      start = null;
+    }, 550);
+  }, { passive: true });
+  canvas.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    if (start && t && Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) cancel();
+  }, { passive: true });
+  canvas.addEventListener('touchend', cancel, { passive: true });
+  engine.map.on('contextmenu', (e) => pointSheet([e.lngLat.lng, e.lngLat.lat]));
+}
+
+// ================================================================== first launch
+
+try {
+  if (!localStorage.getItem('natura:welcomed')) {
+    localStorage.setItem('natura:welcomed', '1');
+    setTimeout(() => {
+      openSheet(
+        'info',
+        `<h2>Welcome to Natura</h2>
+         <div class="sub">An off-road & nature map of Romania.</div>
+         <ul class="steps" style="margin-top:12px">
+           <li class="done"><span><b>Scan</b> finds trails no map shows — from satellite imagery and real GPS trips.</span></li>
+           <li class="done"><span><b>Route</b> plans hikes, bike and moto rides with times learned from real trips.</span></li>
+           <li class="done"><span><b>Long-press</b> the map for coordinates, elevation and “route here”.</span></li>
+           <li class="done"><span><b>More</b> → save areas for offline use, record and import GPX tracks.</span></li>
+         </ul>
+         <button class="btn primary block" id="welcome-ok">Let’s explore</button>`,
+      );
+      q('#welcome-ok')?.addEventListener('click', () => sheet.close());
+    }, 1200);
+  }
+} catch {
+  // storage unavailable: skip onboarding
+}

@@ -11,6 +11,8 @@ import { FEATURE_NAMES, N_FEATURES } from '../../src/engine/routing/routeFeature
 import { mlpForward, type MlpWeights, type RouteNetWeights } from '../../src/engine/routing/routeNet';
 import type { TravelMode } from '../../src/engine/trails/types';
 import type { Row } from './build';
+import { haversine } from '../../src/engine/geo/geodesy';
+import { BRASOV, BRASOV_RADIUS_KM, ROUTE_REGIONS } from './regions';
 
 const ROWS = process.argv[2] ?? 'ml/route_rows.json';
 const OUT = 'src/engine/routing/routenet.weights.json';
@@ -21,6 +23,13 @@ const LR = 0.01;
 const L2 = 2e-3;
 const HUBER = 0.25;
 const MIN_ROWS = 150;
+/** Extra weight for the user's home area (Brașov) so the model fits local trails best. */
+const HOME_WEIGHT = 3;
+
+const isHome = (region: string) => {
+  const c = ROUTE_REGIONS[region];
+  return !!c && haversine(c[0] + 0.02, c[1] + 0.02, BRASOV[0], BRASOV[1]) <= BRASOV_RADIUS_KM * 1000;
+};
 
 // Deterministic PRNG so training is reproducible.
 let seed = 42;
@@ -95,7 +104,9 @@ function evaluate(rows: Row[], w: MlpWeights | null) {
 }
 
 function main() {
-  const rows = JSON.parse(readFileSync(ROWS, 'utf8')) as Row[];
+  const rows = (JSON.parse(readFileSync(ROWS, 'utf8')) as Row[]).map((r) => (isHome(r.region) ? { ...r, w: r.w * HOME_WEIGHT } : r));
+  const homeRegions = [...new Set(rows.map((r) => r.region))].filter(isHome);
+  console.log(`home (Brașov) regions: ${homeRegions.length} — ${homeRegions.join(', ')}`);
   const regions = [...new Set(rows.map((r) => r.region))].sort();
   // Every 4th region is held out — whole regions, so we test generalisation to new places.
   const holdout = new Set(regions.filter((_, i) => i % 4 === 1));
@@ -112,12 +123,19 @@ function main() {
     const w = train(tr);
     const base = evaluate(te, null), learned = evaluate(te, w);
     const better = learned.maeLog < base.maeLog;
+    const teHome = te.filter((r) => isHome(r.region));
+    const home = teHome.length >= 20 ? { n: teHome.length, expert: evaluate(teHome, null), routenet: evaluate(teHome, w) } : null;
     console.log(
       mode.padEnd(5), `train ${tr.length} test ${te.length}`,
       `| held-out median time error: expert ${(base.medianTimeError * 100).toFixed(1)}% → RouteNet ${(learned.medianTimeError * 100).toFixed(1)}%`,
       `| MAE(log v) ${base.maeLog.toFixed(3)} → ${learned.maeLog.toFixed(3)}`, better ? 'SHIP' : 'REJECT',
     );
-    out.eval![mode] = { shipped: better, train: tr.length, test: te.length, expert: base, routenet: learned };
+    if (home) {
+      console.log(
+        `      Brașov held-out (${home.n} stretches): median time error expert ${(home.expert.medianTimeError * 100).toFixed(1)}% → RouteNet ${(home.routenet.medianTimeError * 100).toFixed(1)}%`,
+      );
+    }
+    out.eval![mode] = { shipped: better, train: tr.length, test: te.length, expert: base, routenet: learned, brasov: home };
     if (better) {
       // Final model uses all regions.
       const final = train(all);

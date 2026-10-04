@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data-cache/trails
-          key: trails-v1-${{ steps.week.outputs.week }}
+          key: trails-v2-${{ steps.week.outputs.week }}
 
       - uses: actions/setup-python@v5
         if: env.IS_DEPLOY == 'true' && steps.trails-cache.outputs.cache-hit != 'true'

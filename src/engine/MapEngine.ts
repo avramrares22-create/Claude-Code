@@ -185,6 +185,8 @@ export class MapEngine {
       paint: {
         'line-color': ['get', 'color'],
         'line-width': width(1.3, 2),
+        // Roads are context, trails are the point: keep roads quiet.
+        'line-opacity': ['match', ['get', 'kind'], 'road', 0.55, 1],
       },
     });
     m.addLayer({

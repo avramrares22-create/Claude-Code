@@ -31,6 +31,8 @@ HIGHWAYS = {
 }
 # Rural service roads matter (forest/quarry/hut access); driveways and car parks do not.
 SKIP_SERVICE = {"driveway", "parking_aisle", "drive-through", "alley"}
+# Urban pedestrian infrastructure is noise on a nature map.
+SKIP_FOOTWAY = {"sidewalk", "crossing", "traffic_island", "access_aisle"}
 ROUTES = {"hiking", "foot", "mtb", "bicycle"}
 KEEP_TAGS = {
     "highway", "name", "ref", "surface", "tracktype", "smoothness", "sac_scale", "mtb:scale",
@@ -70,6 +72,8 @@ class Collector(osmium.SimpleHandler):
         t = w.tags
         hw = t.get("highway")
         if hw not in HIGHWAYS and not (hw == "service" and t.get("service") not in SKIP_SERVICE):
+            return
+        if t.get("footway") in SKIP_FOOTWAY:
             return
         try:
             xs = [round(n.location.lon * 1e6) for n in w.nodes]
