@@ -1,0 +1,107 @@
+# Builds, tests and publishes Natura to GitHub Pages.
+#  - every push: typecheck + unit tests + build (CI)
+#  - default branch, daily schedule, manual run: also refresh data and deploy
+#
+# Data published next to the app under /data/:
+#  - trails/   Romania-wide trail cells from the Geofabrik OSM extract (rebuilt weekly)
+#  - s2/       pre-rendered country-scale Sentinel-2 mosaic, z6–z9 (rebuilt daily)
+#  - scenes.json  scene index snapshot (daily)
+#
+# One-time setup: Settings → Pages → Source: "GitHub Actions".
+name: Build & deploy
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *' # daily, after the night's Sentinel-2 passes are indexed
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      IS_DEPLOY: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npx tsc
+      - run: npx vitest run
+
+      - name: Build app
+        run: npm run build
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}/
+
+      # ---- data (deploys only) -------------------------------------------
+      - name: Week number (trail cell cache key)
+        if: env.IS_DEPLOY == 'true'
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore trail cells
+        if: env.IS_DEPLOY == 'true'
+        id: trails-cache
+        uses: actions/cache@v4
+        with:
+          path: data-cache/trails
+          key: trails-v1-${{ steps.week.outputs.week }}
+
+      - uses: actions/setup-python@v5
+        if: env.IS_DEPLOY == 'true' && steps.trails-cache.outputs.cache-hit != 'true'
+        with:
+          python-version: '3.12'
+
+      # Data steps are best-effort: if a source is down, the app still deploys
+      # and falls back to live data (Overpass / on-device rendering).
+      - name: Build Romania trail cells from OpenStreetMap
+        if: env.IS_DEPLOY == 'true' && steps.trails-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          pip install osmium numpy
+          curl -fsSL -o romania.osm.pbf https://download.geofabrik.de/europe/romania-latest.osm.pbf
+          python scripts/data/build_trail_cells.py romania.osm.pbf data-cache/trails
+
+      - name: Pre-render Sentinel-2 mosaic and scene index
+        if: env.IS_DEPLOY == 'true'
+        continue-on-error: true
+        timeout-minutes: 40
+        run: npx tsx scripts/data/prerender-mosaic.ts dist/data 9
+
+      - name: Publish data
+        if: env.IS_DEPLOY == 'true'
+        run: |
+          mkdir -p dist/data
+          if [ -f data-cache/trails/meta.json ]; then cp -r data-cache/trails dist/data/trails; else echo "::warning::No trail cells this run; app will use Overpass"; fi
+          du -sh dist dist/data/* || true
+
+      - uses: actions/upload-pages-artifact@v3
+        if: env.IS_DEPLOY == 'true'
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

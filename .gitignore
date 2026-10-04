@@ -1,1 +1,11 @@
 node_modules/
+dist/
+*.log
+.DS_Store
+ml/data/
+ml/route_raw/
+ml/out/
+__pycache__/
+public/ort/
+ml/route_rows.json
+ml/out2/

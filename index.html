@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <title>Natura</title>
+    <meta name="description" content="Nature & hidden-trail map of Romania built on fresh Sentinel-2 imagery." />
+    <meta name="theme-color" content="#14231a" />
+
+    <!-- iOS: launch as a standalone full-screen app from the home screen, not a Safari shortcut -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Natura" />
+    <link rel="apple-touch-icon" href="%BASE_URL%icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="%BASE_URL%icons/icon-192.png" />
+    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <div id="status" class="pill" hidden></div>
+
+    <div id="card" class="card" hidden></div>
+
+    <nav id="toolbar" class="toolbar">
+      <button id="btn-layer" title="Imagery">🛰️<span>Satellite</span></button>
+      <button id="btn-3d" title="3D terrain">⛰️<span>3D</span></button>
+      <button id="btn-hidden" title="Hidden trails only">🧭<span>Hidden</span></button>
+      <button id="btn-scan" title="Discover unmapped trails here">🔍<span>Scan</span></button>
+      <button id="btn-route" title="Plan a route">🥾<span>Route</span></button>
+      <button id="btn-locate" title="My location">📍<span>Me</span></button>
+    </nav>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
