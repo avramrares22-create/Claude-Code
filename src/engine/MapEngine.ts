@@ -4,6 +4,7 @@
  */
 import { MARK_COLORS } from './trails/classify';
 import { loadBearGrid, loadFineTile, riskIndex, seasonFactor } from './bears/bearRisk';
+import { renderZoneTile, zonePalette } from './bears/bearZones';
 import { applyBasemap, type BaseMode, type Theme } from './mapStyle';
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, LngLatLike, Map as MLMap } from 'maplibre-gl';
@@ -332,6 +333,23 @@ export class MapEngine {
         'line-opacity': ['interpolate', ['linear'], ['get', 'confidence'], 0, 0.45, 1, 1],
       },
     });
+    // The trail you tapped: a soft glow under a bright line, like a selected road in map apps.
+    m.addLayer({
+      id: 'trails-selected-glow',
+      type: 'line',
+      source: 'trails',
+      filter: ['==', ['get', 'wayId'], -1],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#1a73e8', 'line-width': width(9), 'line-blur': 5, 'line-opacity': 0.45 },
+    });
+    m.addLayer({
+      id: 'trails-selected',
+      type: 'line',
+      source: 'trails',
+      filter: ['==', ['get', 'wayId'], -1],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ffffff', 'line-width': width(2.2), 'line-opacity': 0.95 },
+    });
     m.addLayer({
       id: 'trails-label',
       type: 'symbol',
@@ -471,8 +489,13 @@ export class MapEngine {
 
   private bindInteractions() {
     const m = this.map;
+    // Thin lines are hard to hit with a finger: search a small box, POIs first, then trails.
+    const TAP_LAYERS = ['pois-circle', 'trails-line', 'trails-path', 'trails-track', 'trails-hidden', 'trails-detected', 'trails-sidewalk'];
     m.on('click', (e) => {
-      const hit = m.queryRenderedFeatures(e.point, { layers: ['pois-circle', 'trails-line', 'trails-hidden', 'trails-detected'] })[0];
+      const r = 12;
+      const box: [maplibregl.PointLike, maplibregl.PointLike] = [[e.point.x - r, e.point.y - r], [e.point.x + r, e.point.y + r]];
+      const hits = m.queryRenderedFeatures(box, { layers: TAP_LAYERS.filter((l) => m.getLayer(l)) });
+      const hit = hits.find((h) => h.layer.id === 'pois-circle') ?? hits[0];
       const lngLat: [number, number] = [e.lngLat.lng, e.lngLat.lat];
       if (hit?.layer.id === 'pois-circle') {
         const p = hit.properties as { id: number; kind: string; name: string; label: string };
@@ -483,7 +506,7 @@ export class MapEngine {
         this.emit('map:click', { lngLat });
       }
     });
-    for (const id of ['pois-circle', 'trails-line', 'trails-hidden', 'trails-detected']) {
+    for (const id of TAP_LAYERS) {
       m.on('mouseenter', id, () => (m.getCanvas().style.cursor = 'pointer'));
       m.on('mouseleave', id, () => (m.getCanvas().style.cursor = ''));
     }
@@ -536,6 +559,88 @@ export class MapEngine {
     }
   }
 
+  /** Capture dates of the Sentinel-2 scenes painting the current view (newest first), e.g. for "Imagery: 2 Oct". */
+  async imageryDates(): Promise<{ newest: Date; oldest: Date } | null> {
+    const idx = await this.sceneIndex.catch(() => null);
+    if (!idx) return null;
+    const b = this.map.getBounds();
+    const scenes = idx.scenesFor([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]).slice(0, 8);
+    if (!scenes.length) return null;
+    const t = scenes.map((s) => Date.parse(s.datetime)).filter(Number.isFinite);
+    return t.length ? { newest: new Date(Math.max(...t)), oldest: new Date(Math.min(...t)) } : null;
+  }
+
+  // ---------------------------------------------------------------- bear zones overlay
+
+  private bearZones = false;
+  private bearZoneTiles = new Set<string>();
+  private bearZoneLut: Uint8ClampedArray | null = null;
+  private bearZoneMove = () => void this.drawBearZones();
+
+  /** Shows where bears live (same 1–100 scale as the bear meter), drawn under the trails. */
+  setBearZones(on: boolean) {
+    this.bearZones = on;
+    if (on) {
+      this.map.on('moveend', this.bearZoneMove);
+      void this.drawBearZones();
+    } else {
+      this.map.off('moveend', this.bearZoneMove);
+      for (const k of this.bearZoneTiles) if (this.map.getLayer(`bearzone-${k}`)) this.map.setLayoutProperty(`bearzone-${k}`, 'visibility', 'none');
+    }
+  }
+
+  getBearZones(): boolean {
+    return this.bearZones;
+  }
+
+  private async drawBearZones() {
+    if (!this.bearZones) return;
+    const grid = await loadBearGrid().catch(() => null);
+    const fm = grid?.fineInfo;
+    if (!grid || !fm || !this.bearZones) return;
+    this.bearZoneLut ??= zonePalette(grid, seasonFactor(new Date()));
+    const b = this.map.getBounds();
+    const keys: string[] = [];
+    for (let x = Math.floor(b.getWest()); x <= Math.floor(b.getEast()); x++)
+      for (let y = Math.floor(b.getSouth()); y <= Math.floor(b.getNorth()); y++) if (fm.tiles.includes(`${x}_${y}`)) keys.push(`${x}_${y}`);
+    if (keys.length > 12) return; // zoomed far out: the 1° tiles would be too many to be useful
+    const before = this.map.getLayer('trails-casing') ? 'trails-casing' : undefined;
+    for (const k of keys) {
+      if (this.bearZoneTiles.has(k)) {
+        if (this.map.getLayer(`bearzone-${k}`)) this.map.setLayoutProperty(`bearzone-${k}`, 'visibility', 'visible');
+        continue;
+      }
+      let bytes = grid.fineTile(k);
+      if (bytes === undefined) {
+        bytes = await loadFineTile(k).catch(() => null);
+        grid.addFineTile(k, bytes);
+      }
+      if (!bytes || !this.bearZones || this.bearZoneTiles.has(k)) continue;
+      const url = renderZoneTile(bytes, fm.tile, this.bearZoneLut);
+      this.bearZoneTiles.add(k);
+      if (!url) continue;
+      const [x, y] = k.split('_').map(Number);
+      this.map.addSource(`bearzone-${k}`, {
+        type: 'image',
+        url,
+        coordinates: [[x, y + 1], [x + 1, y + 1], [x + 1, y], [x, y]],
+      });
+      this.map.addLayer(
+        {
+          id: `bearzone-${k}`,
+          type: 'raster',
+          source: `bearzone-${k}`,
+          paint: {
+            'raster-resampling': 'linear',
+            'raster-fade-duration': 300,
+            'raster-opacity': ['interpolate', ['linear'], ['zoom'], 7, 1, 13, 0.85, 16, 0.55],
+          },
+        },
+        before,
+      );
+    }
+  }
+
   /** Map type: the drawn map, satellite with labels, or satellite with roads and labels. */
   setBaseMode(mode: BaseMode) {
     this.baseMode = mode;
@@ -585,6 +690,12 @@ export class MapEngine {
   setTerrain3D(on: boolean, exaggeration = 1.4) {
     this.map.setTerrain(on ? { source: 'terrainDem', exaggeration } : null);
     this.map.easeTo({ pitch: on ? 60 : 0, duration: 800 });
+  }
+
+  /** Highlights one trail (by OSM way id), or clears the highlight. */
+  highlightTrail(wayId: number | null) {
+    const f: maplibregl.FilterSpecification = ['==', ['get', 'wayId'], wayId ?? -1];
+    for (const id of ['trails-selected-glow', 'trails-selected']) if (this.map.getLayer(id)) this.map.setFilter(id, f);
   }
 
   /** Which trail kinds to show (e.g. only hidden ones). */

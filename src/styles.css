@@ -80,14 +80,17 @@
 html,
 body {
   margin: 0;
-  height: 100%;
+  height: var(--app-h, 100dvh);
   background: var(--bg);
   color: var(--text);
   font: 15px/1.4 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
   font-feature-settings: 'tnum' 1;
-  /* Stop iOS rubber-band scrolling and long-press callouts on the map. */
+  /* Stop iOS rubber-band scrolling and long-press callouts on the map.
+   * Sized to the *visible* screen (Safari's toolbars excluded), so bottom bars are never cut off. */
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
   overflow: hidden;
   overscroll-behavior: none;
   -webkit-user-select: none;
@@ -182,7 +185,7 @@ input:focus-visible {
   margin: 8px 0 0;
   padding: 6px;
   border-radius: 16px;
-  max-height: 50vh;
+  max-height: calc(var(--app-h, 100dvh) * 0.5);
   overflow-y: auto;
 }
 
@@ -466,7 +469,7 @@ input:focus-visible {
 }
 
 body.sheet-open .fabs {
-  transform: translateY(-38vh);
+  transform: translateY(calc(var(--app-h, 100dvh) * -0.38));
   opacity: 0;
   pointer-events: none;
 }
@@ -555,7 +558,7 @@ body.sheet-open .fabs {
   max-width: 520px;
   margin: 0 auto;
   border-radius: var(--radius);
-  max-height: 46vh;
+  max-height: calc(var(--app-h, 100dvh) * 0.46);
   display: flex;
   flex-direction: column;
   transition:
@@ -572,7 +575,7 @@ body.sheet-open .fabs {
 }
 
 .sheet[data-state='full'] {
-  max-height: calc(100vh - var(--safe-top) - var(--tabbar-h) - var(--safe-bottom) - 110px);
+  max-height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--tabbar-h) - var(--safe-bottom) - 110px);
 }
 
 .sheet.dragging {
@@ -1203,7 +1206,7 @@ body.navigating .sheet {
 
 .bear-risk.expanded {
   bottom: calc(var(--safe-bottom) + 96px);
-  max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 260px);
+  max-height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--safe-bottom) - 260px);
   overflow-y: auto;
 }
 
@@ -1633,7 +1636,7 @@ body.navigating .sheet {
   }
 
   .results {
-    max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 80px);
+    max-height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--safe-bottom) - 80px);
   }
 
   .toasts {
@@ -1651,15 +1654,15 @@ body.navigating .sheet {
     width: var(--col-w);
     max-width: var(--col-w);
     margin: 0;
-    max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 76px);
+    max-height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--safe-bottom) - 76px);
   }
 
   .sheet[data-state='peek'] {
-    max-height: min(62vh, calc(100vh - var(--safe-top) - var(--safe-bottom) - 76px));
+    max-height: min(calc(var(--app-h, 100dvh) * 0.62), calc(var(--app-h, 100dvh) - var(--safe-top) - var(--safe-bottom) - 76px));
   }
 
   .sheet[data-state='full'] {
-    max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 76px);
+    max-height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--safe-bottom) - 76px);
   }
 
   .sheet[data-state='hidden'] {
@@ -1754,7 +1757,7 @@ body.navigating .sheet {
 
   .bear-risk.expanded {
     bottom: auto;
-    max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 24px);
+    max-height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--safe-bottom) - 24px);
   }
 
   .recenter {
@@ -2215,4 +2218,171 @@ body.navigating .quick-chips {
   .topbar {
     max-width: 520px;
   }
+}
+
+/* ---- short portrait screens (iPhone SE / mini, or Safari with its toolbars showing) */
+@media (orientation: portrait) and (max-height: 720px) {
+  :root {
+    --tabbar-h: 62px;
+  }
+
+  .search {
+    height: 46px;
+  }
+
+  .qchip {
+    height: 30px;
+    font-size: 13px;
+  }
+
+  .tab span {
+    font-size: 11px;
+  }
+
+  .tab i {
+    height: 26px;
+  }
+
+  .sheet {
+    max-height: calc(var(--app-h, 100dvh) * 0.52);
+  }
+
+  .nav-hud .turn {
+    padding: 10px 14px;
+  }
+
+  .turn-dist {
+    font-size: 24px;
+  }
+
+  .turn-text {
+    font-size: 15px;
+  }
+
+  .nav-bar {
+    padding-top: 10px !important;
+    padding-bottom: calc(var(--safe-bottom) + 10px) !important;
+  }
+
+  .nb-main b {
+    font-size: 20px;
+  }
+
+  .fab {
+    width: 50px;
+    height: 50px;
+  }
+
+  .fab-sm {
+    width: 38px;
+    height: 38px;
+  }
+}
+
+/* Bars and buttons that must never be hidden stay above everything else. */
+.nav-bar,
+.nav-hud {
+  z-index: 9;
+}
+
+/* ------------------------------------------------------------------ direction beam on the blue dot */
+.user-marker {
+  position: relative;
+  width: 20px;
+  height: 20px;
+}
+
+.user-marker .user-pos {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+}
+
+.user-marker .beam {
+  position: absolute;
+  left: 50%;
+  bottom: 50%;
+  width: 64px;
+  height: 52px;
+  margin-left: -32px;
+  background: radial-gradient(ellipse 50% 100% at 50% 100%, rgba(26, 115, 232, 0.55), rgba(26, 115, 232, 0.18) 60%, transparent 100%);
+  clip-path: polygon(50% 100%, 6% 0, 94% 0);
+  opacity: 0;
+  transform-origin: 50% 100%;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+}
+
+.user-marker.has-heading .beam {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------ daylight */
+.nb-sun {
+  display: block;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nb-sun:empty {
+  display: none;
+}
+
+.nb-sun.warn,
+.sun-line.warn {
+  color: #e8710a;
+  font-weight: 600;
+}
+
+.nb-main span#nb-sub {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------------ imagery date + bear-zone legend */
+.img-date {
+  position: absolute;
+  left: 12px;
+  bottom: calc(var(--safe-bottom) + var(--tabbar-h) + 50px);
+  z-index: 3;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: var(--elev-1, 0 1px 3px rgba(0, 0, 0, 0.25));
+  pointer-events: none;
+  animation: fade-in 0.3s ease;
+}
+
+body.navigating .img-date {
+  display: none;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.zone-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -2px 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.zone-legend i {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgba(255, 213, 79, 0.15), #ffca28 30%, #fb8c00 60%, #e53935 85%, #b71c1c);
 }

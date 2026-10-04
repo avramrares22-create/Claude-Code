@@ -41,6 +41,7 @@ import {
   type Sighting,
 } from './engine/bears/bearRisk';
 import { haversine } from './engine/geo/geodesy';
+import { daylight } from './engine/sun';
 import { kvGet, kvSet } from './engine/util/kvStore';
 import { icons } from './ui/icons';
 import { location, WakeLock, type Fix } from './ui/location';
@@ -64,6 +65,22 @@ const savedBase = (() => {
   }
 })();
 const engine = new MapEngine({ container: 'map', baseMode: savedBase ?? 'map', theme: darkQuery.matches ? 'dark' : 'light' });
+/**
+ * The *visible* screen height. On iPhones `100vh` includes the area behind
+ * Safari's toolbars, which pushed bottom bars (Start, End) off screen. We
+ * measure the visual viewport instead and keep it updated (rotation, toolbar
+ * show/hide, keyboard).
+ */
+const appH = () => Math.round(window.visualViewport?.height ?? window.innerHeight);
+function syncAppHeight() {
+  document.documentElement.style.setProperty('--app-h', `${appH()}px`);
+  engine?.map?.resize();
+}
+window.visualViewport?.addEventListener('resize', syncAppHeight);
+window.addEventListener('resize', syncAppHeight);
+window.addEventListener('orientationchange', () => setTimeout(syncAppHeight, 250));
+syncAppHeight();
+
 /** iPhone held sideways: panels live in a left column instead of a bottom sheet. */
 const landscapeQuery = window.matchMedia('(orientation: landscape) and (max-height: 520px)');
 const isLandscape = () => landscapeQuery.matches;
@@ -71,7 +88,7 @@ const isLandscape = () => landscapeQuery.matches;
 function panelPadding(sheetShare = 0.45) {
   return isLandscape()
     ? { top: 40, bottom: 40, left: 360 + 30, right: 90 }
-    : { top: 90, bottom: window.innerHeight * sheetShare, left: 40, right: 40 };
+    : { top: 90, bottom: appH() * sheetShare, left: 40, right: 40 };
 }
 // Map and UI follow the phone's light/dark setting, live.
 darkQuery.addEventListener('change', (e) => engine.setTheme(e.matches ? 'dark' : 'light'));
@@ -516,10 +533,52 @@ function showUser(f: Fix) {
   if (snap) f = { ...f, lng: snap[0], lat: snap[1] };
   if (!userMarker) {
     const el = document.createElement('div');
-    el.className = 'user-pos';
-    userMarker = new maplibregl.Marker({ element: el }).setLngLat([f.lng, f.lat]).addTo(engine.map);
+    el.className = 'user-marker';
+    el.innerHTML = '<span class="beam"></span><div class="user-pos"></div>';
+    userMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' }).setLngLat([f.lng, f.lat]).addTo(engine.map);
+    if (compassHeading != null) setBeam(compassHeading);
   } else userMarker.setLngLat([f.lng, f.lat]);
+  // Moving faster than a brisk walk: the GPS course is truer than the compass.
+  if (f.heading != null && (f.speed ?? 0) > 1.5) setBeam(f.heading, true);
 }
+
+// ---- direction beam: which way the phone is facing (compass), like Google/Apple Maps.
+let compassHeading: number | null = null;
+let gpsHeadingAt = 0;
+function setBeam(deg: number, fromGps = false) {
+  if (fromGps) gpsHeadingAt = Date.now();
+  else if (Date.now() - gpsHeadingAt < 3000) return;
+  if (!userMarker) return;
+  userMarker.getElement().classList.add('has-heading');
+  userMarker.setRotation(deg);
+}
+function onOrientation(e: DeviceOrientationEvent) {
+  const ios = (e as DeviceOrientationEvent & { webkitCompassHeading?: number }).webkitCompassHeading;
+  let h: number | null = ios != null ? ios : e.absolute && e.alpha != null ? 360 - e.alpha : null;
+  if (h == null) return;
+  // Screen rotated to landscape: the compass is relative to the device, not the screen.
+  h = (h + (screen.orientation?.angle ?? 0) + 360) % 360;
+  if (compassHeading != null && Math.abs(((h - compassHeading + 540) % 360) - 180) < 2) return;
+  compassHeading = h;
+  setBeam(h);
+}
+let compassOn = false;
+/** iOS asks permission for the compass, and only from a tap — so this runs on the locate button. */
+async function enableCompass() {
+  if (compassOn) return;
+  const DOE = window.DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> } | undefined;
+  if (!DOE) return;
+  try {
+    if (typeof DOE.requestPermission === 'function' && (await DOE.requestPermission()) !== 'granted') return;
+  } catch {
+    return;
+  }
+  compassOn = true;
+  const w = window as Window;
+  w.addEventListener(('ondeviceorientationabsolute' in w ? 'deviceorientationabsolute' : 'deviceorientation') as 'deviceorientation', onOrientation);
+}
+// Android/desktop need no permission prompt.
+if (typeof (window.DeviceOrientationEvent as unknown as { requestPermission?: unknown } | undefined)?.requestPermission !== 'function') void enableCompass();
 
 location.onError((msg) => toast(msg, { kind: 'warn', key: 'gps', ms: 5000 }));
 
@@ -538,6 +597,7 @@ fabLocate.addEventListener('click', () => {
     fabLocate.classList.remove('active');
     return;
   }
+  void enableCompass();
   following = true;
   firstFollow = true;
   fabLocate.classList.add('active');
@@ -603,7 +663,7 @@ function layersSheet() {
          ? `<div class="seg" id="imagery-seg" style="margin-top:10px">
        ${(['truecolor', 'ndvi'] as const).map((m) => `<button data-m="${m}" class="${mode === m ? 'on' : ''}">${{ truecolor: 'True colour', ndvi: 'Vegetation' }[m]}</button>`).join('')}
      </div>
-     <div class="meta">Sentinel-2 (10 m, updated every few days)${engine.hiresProvider ? ` · from zoom 14: ${esc(engine.hiresProvider.label)}` : ''}</div>`
+     <div class="meta">Sentinel-2 (10 m, updated every few days)<span id="layers-imgdate"></span>${engine.hiresProvider ? ` · from zoom 14: ${esc(engine.hiresProvider.label)}` : ''}</div>`
          : '<div class="meta">Drawn map © OpenStreetMap contributors · OpenFreeMap. Follows your phone\'s light/dark setting.</div>'
      }
      <h3>Trails</h3>
@@ -615,6 +675,10 @@ function layersSheet() {
        <label class="switch"><input id="sw-autoscan" type="checkbox" ${engine.autoScan ? 'checked' : ''}><span></span></label></div>
      <div class="row"><div><div class="label">AI trail alignment</div><div class="hint">When zoomed in, TrailNet moves trails onto the path visible in satellite imagery</div></div>
        <label class="switch"><input id="sw-align" type="checkbox" ${engine.autoAlign ? 'checked' : ''}><span></span></label></div>
+     <h3>Overlays</h3>
+     <div class="row"><div><div class="label">🐻 Bear zones</div><div class="hint">Where brown bears live, at ~200 m — same scale as the bear meter</div></div>
+       <label class="switch"><input id="sw-bears" type="checkbox" ${engine.getBearZones() ? 'checked' : ''}><span></span></label></div>
+     ${engine.getBearZones() ? '<div class="zone-legend"><span>Low</span><i></i><span>Very high</span></div>' : ''}
      <h3>Terrain</h3>
      <div class="row"><div><div class="label">3D terrain</div><div class="hint">Tilt with two fingers</div></div>
        <label class="switch"><input id="sw-3d" type="checkbox" ${terrainOn ? 'checked' : ''}><span></span></label></div>`,
@@ -628,6 +692,7 @@ function layersSheet() {
   q('#maptype')!.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
     b.addEventListener('click', () => {
       engine.setBaseMode(b.dataset.b as BaseMode);
+      void updateImageryBadge();
       try {
         localStorage.setItem('natura:basemode', b.dataset.b!);
       } catch {
@@ -648,6 +713,20 @@ function layersSheet() {
     }),
   );
   q<HTMLInputElement>('#sw-3d')!.addEventListener('change', () => fab3d.click());
+  q<HTMLInputElement>('#sw-bears')!.addEventListener('change', (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    engine.setBearZones(on);
+    try {
+      localStorage.setItem('natura:bearzones', on ? 'on' : 'off');
+    } catch {
+      // ignore
+    }
+    layersSheet();
+  });
+  void engine.imageryDates().then((d) => {
+    const el = q('#layers-imgdate');
+    if (el && d) el.textContent = ` · this view: ${fmtDay(d.oldest)}${fmtDay(d.oldest) !== fmtDay(d.newest) ? `–${fmtDay(d.newest)}` : ''}`;
+  });
   q<HTMLInputElement>('#sw-autoscan')!.addEventListener('change', (e) => {
     const on = (e.target as HTMLInputElement).checked;
     engine.autoScan = on;
@@ -670,6 +749,31 @@ function layersSheet() {
     if (on) void engine.alignView();
   });
 }
+const fmtDay = (d: Date) => d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+try {
+  if (localStorage.getItem('natura:bearzones') === 'on') {
+    const go = () => engine.setBearZones(true);
+    if (engine.map.getLayer('trails-casing')) go();
+    else engine.map.once('idle', go);
+  }
+} catch {
+  // ignore
+}
+
+// Satellite/Hybrid: a quiet badge with the capture date of the imagery you're looking at.
+const imgBadge = document.createElement('div');
+imgBadge.className = 'img-date';
+imgBadge.hidden = true;
+document.body.append(imgBadge);
+async function updateImageryBadge() {
+  const sat = engine.getBaseMode() !== 'map';
+  const d = sat && engine.map.getZoom() < 14.5 ? await engine.imageryDates() : null;
+  imgBadge.hidden = !d;
+  if (d) imgBadge.textContent = `🛰 ${fmtDay(d.newest)}`;
+  if (d) imgBadge.title = `Sentinel-2 imagery captured ${fmtDay(d.oldest)}–${fmtDay(d.newest)}`;
+}
+engine.map.on('moveend', () => void updateImageryBadge());
+
 $('tab-layers').addEventListener('click', () => (sheetOwner === 'layers' ? sheet.close() : layersSheet()));
 
 $('tab-hidden').addEventListener('click', () => {
@@ -681,7 +785,9 @@ $('tab-hidden').addEventListener('click', () => {
 
 // ================================================================== trail / place info
 
+sheet.onClose(() => engine.highlightTrail(null));
 engine.on('trail:click', (t) => {
+  engine.highlightTrail(Number(t.wayId) || null);
   if (routing.active) return void onRoutingTap(t.lngLat);
   if (navActive) return;
   showTrailInfo(t);
@@ -938,6 +1044,19 @@ function prefLabel(v: number) {
   return v <= -1 ? 'avoid' : v < 0 ? 'less' : v === 0 ? 'neutral' : v < 1 ? 'more' : 'seek out';
 }
 
+/** "Sunset 20:14 · 3 h 10 min of daylight" — and a warning when you'd finish in the dark. */
+function sunLine(route: Route): string {
+  const [lng, lat] = route.coords[0];
+  const dl = daylight(new Date(), lng, lat);
+  if (!dl.sunset && dl.up) return '';
+  const arrive = Date.now() + route.duration * 1000;
+  if (!dl.up) return `<div class="meta sun-line warn">🌙 It's dark now — take a headlamp; bears are most active at dusk and night.</div>`;
+  const late = arrive > dl.sunset!.getTime();
+  return late
+    ? `<div class="meta sun-line warn">🌙 Sunset ${fmtAt(dl.sunset!)} — you'd finish about ${fmtTime((arrive - dl.sunset!.getTime()) / 1000)} after dark. Start earlier or pack a headlamp.</div>`
+    : `<div class="meta sun-line">☀ Sunset ${fmtAt(dl.sunset!)} · ${fmtTime(dl.leftMs / 1000)} of daylight, ${fmtTime((dl.sunset!.getTime() - arrive) / 1000)} to spare</div>`;
+}
+
 function renderRouteSheet(route: Route | null) {
   const p = routing.prefs;
   const slider = (id: string, label: string, value: string, min: number, max: number, step: number, v: number) =>
@@ -982,6 +1101,7 @@ function renderRouteSheet(route: Route | null) {
            ? `<div class="meta bear-route lvl-${riskLevel(route.bearIndex)}">🐻 Bear exposure along the way: <b>${RISK_LABEL[riskLevel(route.bearIndex)]}</b> (${route.bearIndex}/100)</div>`
            : ''
        }
+       ${sunLine(route)}
        ${warn}
        ${options}
        <div class="btns"><button class="btn" id="route-gpx">Save as GPX</button></div>`,
@@ -1092,7 +1212,7 @@ function navCamFrame() {
     bearing: c.b,
     pitch: 55,
     zoom: navCam.userZoom ?? speedZoom,
-    padding: isLandscape() ? { top: window.innerHeight * 0.3, bottom: 40, left: 360, right: 0 } : { top: window.innerHeight * 0.38, bottom: 150, left: 0, right: 0 },
+    padding: isLandscape() ? { top: appH() * 0.3, bottom: 40, left: 360, right: 0 } : { top: appH() * 0.38, bottom: 150, left: 0, right: 0 },
   });
 }
 function navCamFeed(pos: [number, number], bearing: number, speed: number | null) {
@@ -1171,6 +1291,7 @@ function speak(text: string) {
   }
 }
 
+const fmtAt = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const fmtClock = (secondsFromNow: number) => new Date(Date.now() + secondsFromNow * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const fmtDist = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.max(10, Math.round(m / 10) * 10)} m`);
 
@@ -1342,6 +1463,7 @@ let turnMarker: maplibregl.Marker | null = null;
 
 function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'> & { segments?: Route['segments'] }) {
   stopNavigation(false);
+  void enableCompass(); // from the Start tap, so iOS may ask
   const navStarted = Date.now();
   let lastNext = -1;
   const { coords, elevations, duration } = route;
@@ -1369,6 +1491,27 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
   showBearRisk(true);
   hud.className = 'nav-hud glass';
   hud.innerHTML = `<div class="turn"><span class="turn-ico">${arrowSvg('depart')}</span><div><div class="turn-dist">Waiting for GPS…</div><div class="turn-text">${esc(maneuvers[0]?.text ?? '')}</div></div></div>`;
+  // The bar (with End) is drawn once, so it's there before the first GPS fix and
+  // taps never land on a button that's being replaced; fixes only update its text.
+  navBar.innerHTML = `<div class="nb-main"><b id="nb-time">${fmtTime(duration)}</b><span id="nb-sub">Waiting for GPS…</span><span id="nb-sun" class="nb-sun"></span></div>
+    <button class="nb-btn" id="nav-voice" aria-label="Voice">${voiceOn ? '🔊' : '🔇'}</button>
+    <button class="btn" id="nav-stop">End</button>`;
+  navBar.querySelector('#nav-stop')!.addEventListener('click', () => stopNavigation(true));
+  const voiceBtn = navBar.querySelector<HTMLButtonElement>('#nav-voice')!;
+  voiceBtn.addEventListener('click', () => {
+    voiceOn = !voiceOn;
+    voiceBtn.textContent = voiceOn ? '🔊' : '🔇';
+    try {
+      localStorage.setItem('natura:voice', voiceOn ? 'on' : 'off');
+    } catch {
+      // ignore
+    }
+    if (!voiceOn) speechSynthesis?.cancel();
+  });
+  const nbTime = navBar.querySelector<HTMLElement>('#nb-time')!;
+  const nbSub = navBar.querySelector<HTMLElement>('#nb-sub')!;
+  const nbSun = navBar.querySelector<HTMLElement>('#nb-sun')!;
+  let sunAt = 0;
   speak(maneuvers[0] ? `${maneuvers[0].spoken}.` : 'Starting navigation');
   let lastBearing = engine.map.getBearing();
   let firstHeading = true;
@@ -1413,19 +1556,16 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
          ${after && after.along - next.along < 400 ? `<div class="then">Then ${arrowSvg(after.type, 18)} ${esc(after.text.replace(/ onto| on/, ''))}</div>` : ''}`;
     hud.querySelector('#nav-reroute')?.addEventListener('click', () => void reroute(f, dest));
 
-    navBar.innerHTML = `<div class="nb-main"><b>${fmtTime(s.remainingTime)}</b><span>${fmtDist(s.remaining)} · arrive ${fmtClock(s.remainingTime)}${s.climbLeft > 20 ? ` · ↑${Math.round(s.climbLeft)} m` : ''}</span></div>
-      <button class="nb-btn" id="nav-voice" aria-label="Voice">${voiceOn ? '🔊' : '🔇'}</button>
-      <button class="btn" id="nav-stop">End</button>`;
-    navBar.querySelector('#nav-stop')!.addEventListener('click', () => stopNavigation(true));
-    navBar.querySelector('#nav-voice')!.addEventListener('click', () => {
-      voiceOn = !voiceOn;
-      try {
-        localStorage.setItem('natura:voice', voiceOn ? 'on' : 'off');
-      } catch {
-        // ignore
-      }
-      if (!voiceOn) speechSynthesis?.cancel();
-    });
+    nbTime.textContent = fmtTime(s.remainingTime);
+    nbSub.textContent = `${fmtDist(s.remaining)} · arrive ${fmtClock(s.remainingTime)}${s.climbLeft > 20 ? ` · ↑${Math.round(s.climbLeft)} m` : ''}`;
+    if (Date.now() - sunAt > 60_000) {
+      sunAt = Date.now();
+      const dl = daylight(new Date(), f.lng, f.lat);
+      const arrive = Date.now() + s.remainingTime * 1000;
+      const dark = !dl.up || (dl.sunset != null && arrive > dl.sunset.getTime());
+      nbSun.classList.toggle('warn', dark && s.remainingTime > 600);
+      nbSun.textContent = !dl.up ? '🌙 dark out — headlamp on' : dl.sunset ? `${dark ? '🌙 arrive after sunset' : '☀ sunset'} ${fmtAt(dl.sunset)}` : '';
+    }
 
     // Voice: far (~250 m), near (~60 m), now (<20 m) — each once per maneuver.
     const k = maneuvers.indexOf(next);
