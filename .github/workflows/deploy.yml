@@ -63,8 +63,16 @@ jobs:
           path: data-cache/trails
           key: trails-v2-${{ steps.week.outputs.week }}
 
+      - name: Restore search index
+        if: env.IS_DEPLOY == 'true'
+        id: search-cache
+        uses: actions/cache@v4
+        with:
+          path: data-cache/search
+          key: search-v1-${{ steps.week.outputs.week }}-${{ hashFiles('scripts/data/build_gazetteer.py') }}
+
       - uses: actions/setup-python@v5
-        if: env.IS_DEPLOY == 'true' && steps.trails-cache.outputs.cache-hit != 'true'
+        if: env.IS_DEPLOY == 'true' && (steps.trails-cache.outputs.cache-hit != 'true' || steps.search-cache.outputs.cache-hit != 'true')
         with:
           python-version: '3.12'
 
@@ -77,6 +85,14 @@ jobs:
           pip install osmium numpy
           curl -fsSL -o romania.osm.pbf https://download.geofabrik.de/europe/romania-latest.osm.pbf
           python scripts/data/build_trail_cells.py romania.osm.pbf data-cache/trails
+
+      - name: Build offline search index (gazetteer) from OpenStreetMap
+        if: env.IS_DEPLOY == 'true' && steps.search-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          pip install osmium numpy scipy shapely
+          [ -f romania.osm.pbf ] || curl -fsSL -o romania.osm.pbf https://download.geofabrik.de/europe/romania-latest.osm.pbf
+          python scripts/data/build_gazetteer.py romania.osm.pbf data-cache/search
 
       # Previous run's tiles + manifest, so only changed tiles are re-rendered.
       - name: Restore pre-rendered mosaic
@@ -107,6 +123,7 @@ jobs:
         run: |
           mkdir -p dist/data
           if [ -f data-cache/trails/meta.json ]; then cp -r data-cache/trails dist/data/trails; else echo "::warning::No trail cells this run; app will use Overpass"; fi
+          if [ -f data-cache/search/meta.json ]; then cp -r data-cache/search dist/data/search; else echo "::warning::No search index this run; search uses Photon"; fi
           if [ -f data-cache/mosaic/s2/meta.json ]; then cp -r data-cache/mosaic/s2 dist/data/s2 && cp data-cache/mosaic/scenes.json dist/data/; rm -f dist/data/s2/manifest.json; else echo "::warning::No pre-rendered mosaic this run; app renders on device"; fi
           du -sh dist dist/data/* || true
 
