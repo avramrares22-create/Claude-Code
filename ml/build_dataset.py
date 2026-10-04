@@ -116,12 +116,12 @@ def draw_line(lbl, x0, y0, x1, y1, r):
                     lbl[y, x] = 1
 
 
-def build(name, lng, lat):
-    out = os.path.join(OUT, f"{name}.npz")
+def build(name, lng, lat, scene=None, ways=None, out_dir=None):
+    out = os.path.join(out_dir or OUT, f"{name}.npz")
     if os.path.exists(out):
         return name, "cached"
     bbox = [lng, lat, lng + SIZE, lat + SIZE]
-    scene = best_scene(bbox)
+    scene = scene or best_scene(bbox)
     if not scene:
         return name, "no clear scene"
     epsg = scene["properties"]["proj:epsg"]
@@ -147,7 +147,7 @@ def build(name, lng, lat):
         scl = np.pad(scl, ((0, H - scl.shape[0]), (0, W - scl.shape[1])))
     valid = (~np.isin(scl, [0, 1, 3, 8, 9, 10]) & (img.min(0) > 0)).astype(np.uint8)
 
-    ways = osm_ways(bbox)
+    ways = ways if ways is not None else osm_ways(bbox)
     lbl = np.zeros((H, W), np.uint8)
     inv = ~transform
     for hw, pts in ways:

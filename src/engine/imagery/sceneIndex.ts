@@ -72,32 +72,39 @@ export class SceneIndex {
       writeCache(snap);
       return new SceneIndex(snap);
     }
-    const from = new Date(Date.now() - STAC.lookbackDays * 86_400_000);
-    const scenes = await searchScenes({ bbox: ROMANIA_BBOX, from, maxCloud: STAC.maxCloudCover, signal });
-    writeCache(scenes);
-    return new SceneIndex(scenes);
+    try {
+      const from = new Date(Date.now() - STAC.lookbackDays * 86_400_000);
+      const scenes = await searchScenes({ bbox: ROMANIA_BBOX, from, maxCloud: STAC.maxCloudCover, signal });
+      writeCache(scenes);
+      return new SceneIndex(scenes);
+    } catch (err) {
+      // No signal: an old index still finds the tiles saved for offline use.
+      const old = readCache(Infinity) ?? (await loadSnapshot(signal, Infinity));
+      if (old) return new SceneIndex(old);
+      throw err;
+    }
   }
 }
 
 const SNAPSHOT_MAX_AGE_MS = 3 * 86_400_000;
 
-async function loadSnapshot(signal?: AbortSignal): Promise<Scene[] | null> {
+async function loadSnapshot(signal?: AbortSignal, maxAge = SNAPSHOT_MAX_AGE_MS): Promise<Scene[] | null> {
   try {
     const res = await fetch(dataUrl('scenes.json'), { signal });
     if (!res.ok) return null;
     const { generated, scenes } = (await res.json()) as { generated: string; scenes: Scene[] };
-    return Date.now() - Date.parse(generated) < SNAPSHOT_MAX_AGE_MS && scenes.length ? scenes : null;
+    return Date.now() - Date.parse(generated) < maxAge && scenes.length ? scenes : null;
   } catch {
     return null;
   }
 }
 
-function readCache(): Scene[] | null {
+function readCache(maxAge = CACHE_TTL_MS): Scene[] | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const { t, scenes } = JSON.parse(raw) as { t: number; scenes: Scene[] };
-    return Date.now() - t < CACHE_TTL_MS ? scenes : null;
+    return Date.now() - t < maxAge ? scenes : null;
   } catch {
     return null;
   }

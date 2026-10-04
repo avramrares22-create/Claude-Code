@@ -4,6 +4,7 @@
  */
 import { TERRAIN, type BBox } from '../config';
 import { latToTileY, lngToTileX, tilesInBBox } from '../geo/mercator';
+import { fetchSafe } from '../util/net';
 
 export interface ElevationProvider {
   /** Loads whatever is needed to answer `get` synchronously inside bbox. */
@@ -17,6 +18,8 @@ export function decodeTerrarium(r: number, g: number, b: number): number {
 }
 
 type Tile = { size: number; elev: Float32Array };
+
+const MIN_ZOOM = 6;
 
 export class TerrariumElevation implements ElevationProvider {
   private tiles = new Map<string, Promise<Tile | null>>();
@@ -32,12 +35,17 @@ export class TerrariumElevation implements ElevationProvider {
     let z = this.zoom;
     let tiles = tilesInBBox(bbox, z);
     while (tiles.length > 64 && z > 8) tiles = tilesInBBox(bbox, --z);
-    await Promise.all(tiles.map(([tz, x, y]) => this.load(tz, x, y)));
+    await Promise.all(tiles.map(([tz, x, y]) => this.loadOrParent(tz, x, y)));
+  }
+
+  /** Falls back to coarser tiles when one is missing (offline pack saved only up to a lower zoom). */
+  private async loadOrParent(z: number, x: number, y: number): Promise<void> {
+    for (; z >= MIN_ZOOM; z--, x >>= 1, y >>= 1) if (await this.load(z, x, y)) return;
   }
 
   get(lng: number, lat: number): number | null {
     // Finest loaded zoom wins.
-    for (let z = this.zoom; z >= 8; z--) {
+    for (let z = this.zoom; z >= MIN_ZOOM; z--) {
       const v = this.sample(z, lng, lat);
       if (v !== null) return v;
     }
@@ -82,8 +90,7 @@ export class TerrariumElevation implements ElevationProvider {
 }
 
 async function fetchTile(url: string): Promise<Tile> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`DEM tile ${res.status}`);
+  const res = await fetchSafe(url, { timeoutMs: 15_000 });
   const bmp = await createImageBitmap(await res.blob());
   const canvas = new OffscreenCanvas(bmp.width, bmp.height);
   const g = canvas.getContext('2d', { willReadFrequently: true })!;

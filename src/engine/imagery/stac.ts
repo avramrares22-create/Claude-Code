@@ -1,5 +1,6 @@
 /** Minimal STAC client for Earth Search (Element 84). */
 import { STAC, type BBox } from '../config';
+import { fetchJson } from '../util/net';
 
 export interface Scene {
   id: string;
@@ -93,14 +94,15 @@ export async function searchScenes(opts: SearchOptions): Promise<Scene[]> {
   let url = `${STAC.endpoint}/search`;
   let reqBody: unknown = body;
   while (url && out.length < max) {
-    const res = await fetch(url, {
+    // Search is a read despite POST: safe to retry.
+    const page = await fetchJson<StacPage>(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reqBody),
       signal: opts.signal,
+      retries: 2,
+      timeoutMs: 30_000,
     });
-    if (!res.ok) throw new Error(`STAC search failed: ${res.status}`);
-    const page = (await res.json()) as StacPage;
     for (const f of page.features) {
       try {
         out.push(parseScene(f));
@@ -152,11 +154,7 @@ const assetCache = new Map<string, Promise<SceneAssets>>();
 export function getSceneAssets(id: string): Promise<SceneAssets> {
   let p = assetCache.get(id);
   if (!p) {
-    p = fetch(`${STAC.endpoint}/collections/${STAC.collection}/items/${encodeURIComponent(id)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`STAC item ${id}: ${r.status}`);
-        return r.json() as Promise<StacItem>;
-      })
+    p = fetchJson<StacItem>(`${STAC.endpoint}/collections/${STAC.collection}/items/${encodeURIComponent(id)}`)
       .then((item) => {
         const a = item.assets ?? {};
         if (!a.visual || !a.red || !a.nir || !a.scl) throw new Error(`Scene ${id} is missing assets`);

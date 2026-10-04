@@ -11,6 +11,7 @@ import { decodeCell, type TrailCellV1 } from './cellFormat';
 import { dataUrl } from '../util/base';
 import type * as GeoJSON from 'geojson';
 import type { OsmElement, OsmNode, OsmRelation, OsmWay, Poi, Trail, TrailKind, TrailRoute } from './types';
+import { fetchJson, HttpError } from '../util/net';
 
 export type Loader = (bbox: BBox, signal?: AbortSignal, cell?: [number, number, number]) => Promise<OsmElement[]>;
 
@@ -29,9 +30,13 @@ function hasStaticCells(): Promise<boolean> {
  */
 export const defaultLoader: Loader = async (bbox, signal, cell) => {
   if (cell && (await hasStaticCells())) {
-    const res = await fetch(dataUrl(`trails/${cell[0]}/${cell[1]}/${cell[2]}.json`), { signal });
-    if (res.ok) return decodeCell((await res.json()) as TrailCellV1);
-    if (res.status === 404) return []; // no trails in this cell (e.g. outside Romania)
+    try {
+      return decodeCell(await fetchJson<TrailCellV1>(dataUrl(`trails/${cell[0]}/${cell[1]}/${cell[2]}.json`), { signal }));
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) return []; // no trails in this cell (e.g. outside Romania)
+      if (signal?.aborted) throw err;
+      // Static host hiccup: fall through to live Overpass.
+    }
   }
   return fetchOverpass(bbox, signal);
 };
@@ -57,6 +62,10 @@ export class TrailStore {
   private derived: { trails: Trail[]; pois: Poi[] } | null = null;
   /** Trails found outside OSM (GPS traces, imagery), keyed by detector. */
   private detected = new Map<string, Trail[]>();
+  /** AI-aligned geometry per OSM way id (and the shift in metres). */
+  private aligned = new Map<number, { coords: Array<[number, number]>; shift: number }>();
+  /** Whether corrected geometry is shown/used (user setting). */
+  useAlignment = true;
 
   constructor(
     private loader: Loader = defaultLoader,
@@ -114,6 +123,23 @@ export class TrailStore {
     for (const fn of this.listeners) fn();
   }
 
+  /** Applies AI-aligned geometry (vertex count must match the OSM way). */
+  setAligned(items: Array<{ wayId: number; coords: Array<[number, number]>; shift: number }>) {
+    for (const a of items) this.aligned.set(a.wayId, { coords: a.coords, shift: a.shift });
+    this.derived = null;
+    for (const fn of this.listeners) fn();
+  }
+
+  setUseAlignment(on: boolean) {
+    this.useAlignment = on;
+    this.derived = null;
+    for (const fn of this.listeners) fn();
+  }
+
+  get alignedCount(): number {
+    return this.aligned.size;
+  }
+
   /** Raw OSM node coordinates of loaded ways, for snapping detected trails onto the network. */
   osmWays(): Iterable<OsmWay> {
     return this.ways.values();
@@ -131,7 +157,15 @@ export class TrailStore {
         else routesByWay.set(m.ref, [route]);
       }
     }
-    const trails = [...this.ways.values()].map((w) => classifyWay(w, routesByWay.get(w.id) ?? []));
+    const trails = [...this.ways.values()].map((w) => {
+      const t = classifyWay(w, routesByWay.get(w.id) ?? []);
+      const a = this.useAlignment ? this.aligned.get(w.id) : undefined;
+      if (a && a.coords.length === t.coords.length) {
+        t.coords = a.coords;
+        t.tags = { ...t.tags, 'natura:aligned_m': String(Math.round(a.shift)) };
+      }
+      return t;
+    });
     for (const list of this.detected.values()) trails.push(...list);
     const pois = [...this.nodes.values()].map(classifyPoi).filter((p): p is Poi => p !== null);
     this.derived = { trails, pois };
@@ -171,6 +205,7 @@ export class TrailStore {
           source: t.source,
           confidence: t.confidence,
           usage: t.tags['detected:usage'] ?? '',
+          aligned: Number(t.tags['natura:aligned_m'] ?? 0),
           sources: t.tags['detected:sources'] ?? t.source,
         },
       })),

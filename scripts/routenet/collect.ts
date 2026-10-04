@@ -7,24 +7,14 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { parseGpx, type Trace } from '../../src/engine/detect/gps';
 import type { OsmWay } from '../../src/engine/trails/types';
+import { ROUTE_REGIONS } from './regions';
 
 const OUT = process.argv[2] ?? 'ml/route_raw';
-const SIZE = 0.04;
-const MAX_PAGES = 5;
+// Box size in degrees; dense towns need smaller boxes (OSM API node limit).
+const SIZE = Number(process.env.SIZE ?? 0.04);
+const MAX_PAGES = 8;
 const PAUSE_MS = 1500;
 const HEADERS = { 'User-Agent': 'natura-routenet/1.0 (one-off research extract)' };
-
-// Popular outdoor areas (hiking, MTB, enduro) — where public traces exist.
-export const ROUTE_REGIONS: Record<string, [number, number]> = {
-  bucegi: [25.44, 45.39], piatra_craiului: [25.22, 45.52], postavarul: [25.55, 45.57], ciucas: [25.92, 45.5],
-  baiului: [25.62, 45.38], rodna: [24.78, 47.57], gutai: [23.82, 47.7], maramures: [24.35, 47.73],
-  ceahlau: [25.95, 46.95], rarau: [25.58, 47.45], hasmas: [25.82, 46.68], suhard: [25.3, 47.38],
-  calimani: [25.2, 47.1], padis: [22.7, 46.6], vladeasa: [22.8, 46.75], bihor: [22.65, 46.48],
-  trascau: [23.55, 46.3], retezat: [22.86, 45.37], parang: [23.53, 45.36], cozia: [24.33, 45.31],
-  semenic: [22.05, 45.17], mehedinti: [22.62, 44.98], cindrel: [23.85, 45.58], macin: [28.25, 45.2],
-  brasov_hills: [25.6, 45.62], sinaia: [25.53, 45.34], busteni: [25.52, 45.41], sibiu_hills: [24.1, 45.75],
-  cluj_hills: [23.55, 46.73], iasi_hills: [27.55, 47.1],
-};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -57,7 +47,9 @@ async function osmWays(b: number[]): Promise<OsmWay[]> {
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
+  const only = process.env.ONLY?.split(',');
   for (const [name, [lng, lat]] of Object.entries(ROUTE_REGIONS)) {
+    if (only && !only.includes(name)) continue;
     const file = `${OUT}/${name}.json`;
     if (existsSync(file)) {
       console.log(name, 'cached');

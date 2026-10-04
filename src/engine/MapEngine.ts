@@ -10,7 +10,7 @@ import type * as GeoJSON from 'geojson';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { HIRES, IMAGERY, MAX_MAP_ZOOM, OVERPASS, ROMANIA_BBOX, ROMANIA_CENTER, type BBox, type HiresProvider } from './config';
 import { chooseHires } from './imagery/hires';
-import { imageryStats, imageryTileUrl, registerImageryProtocol } from './imagery/imageryProtocol';
+import { imageryStats, imageryTileUrl, registerImageryProtocol, type ImageryHandle } from './imagery/imageryProtocol';
 import type { ImageryMode } from './imagery/renderTile';
 import { SceneIndex } from './imagery/sceneIndex';
 import { TrailGraph } from './routing/graph';
@@ -23,6 +23,8 @@ import { TerrariumElevation } from './terrain/elevation';
 import { TrailStore } from './trails/trailStore';
 import type { Access, Trail, TrailKind } from './trails/types';
 import { Discovery } from './detect/discovery';
+import { downloadPack, planOfflineArea, planPack, PACKS, type OfflinePlan, type Progress } from './offline';
+import { latToTileY, lngToTileX, tilesInBBox } from './geo/mercator';
 import { mergeDetections } from './detect/merge';
 
 /** Properties of a trail feature on the map (see TrailStore.trailsGeoJSON). */
@@ -42,11 +44,15 @@ export interface TrailProps {
   confidence: number;
   usage: string;
   sources: string;
+  /** AI alignment shift in metres (0 = untouched). */
+  aligned: number;
 }
 
 export interface DiscoveryResult {
   found: number;
   meters: number;
+  /** Mapped trails moved onto the imagery by AI alignment. */
+  aligned: number;
   /** Detections per source, or the reason that source failed. */
   gps: number | string;
   imagery: number | string;
@@ -61,11 +67,16 @@ export interface EngineEvents {
   'trail:click': TrailProps & { lngLat: [number, number] };
   'poi:click': { id: number; kind: string; name: string; label: string; lngLat: [number, number] };
   'map:click': { lngLat: [number, number] };
+  'align:start': Record<string, never>;
+  'align:done': { aligned: number; detected: number };
 }
 
 type Handler<K extends keyof EngineEvents> = (e: EngineEvents[K]) => void;
 
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+const AUTO_ALIGN_ZOOM = 14;
+const AUTO_SCAN_ZOOM = 12;
+const AUTO_SCAN_MS = 60_000;
 
 export interface EngineOptions {
   container: HTMLElement | string;
@@ -84,7 +95,7 @@ export class MapEngine {
   readonly ready: Promise<void>;
   readonly imageryStats = imageryStats;
   private sceneIndex: Promise<SceneIndex>;
-  private unregisterImagery: () => void;
+  private imagery: ImageryHandle;
   private handlers = new Map<keyof EngineEvents, Set<Handler<never>>>();
   private graph: TrailGraph | null = null;
   private trailAbort: AbortController | null = null;
@@ -99,7 +110,7 @@ export class MapEngine {
       (i) => this.emit('imagery:index', { grids: i.size }),
       (e: Error) => this.emit('imagery:error', { message: e.message }),
     );
-    this.unregisterImagery = registerImageryProtocol(this.sceneIndex);
+    this.imagery = registerImageryProtocol(this.sceneIndex);
 
     const [w, s, e, n] = ROMANIA_BBOX;
     this.map = new maplibregl.Map({
@@ -133,6 +144,12 @@ export class MapEngine {
         });
         this.bindInteractions();
         this.map.on('moveend', () => void this.loadTrailsForView());
+        this.map.on('idle', () => {
+          this.scheduleAutoAlign();
+          this.lookAhead();
+        });
+        this.map.on('movestart', () => this.lookAheadAbort?.abort());
+        this.startAutoScan();
         void this.loadTrailsForView();
         resolve();
       });
@@ -157,6 +174,9 @@ export class MapEngine {
     m.addSource('trails', { type: 'geojson', data: EMPTY, promoteId: 'wayId' });
     m.addSource('pois', { type: 'geojson', data: EMPTY });
     m.addSource('route', { type: 'geojson', data: EMPTY });
+    m.addSource('route-done', { type: 'geojson', data: EMPTY });
+    m.addSource('track', { type: 'geojson', data: EMPTY });
+    m.addSource('imported', { type: 'geojson', data: EMPTY });
 
     // Zoom interpolation must be the outermost expression, so per-feature
     // variation (marked vs other) goes inside each stop.
@@ -182,6 +202,8 @@ export class MapEngine {
       paint: {
         'line-color': ['get', 'color'],
         'line-width': width(1.3, 2),
+        // Roads are context, trails are the point: keep roads quiet.
+        'line-opacity': ['match', ['get', 'kind'], 'road', 0.55, 1],
       },
     });
     m.addLayer({
@@ -227,18 +249,67 @@ export class MapEngine {
       paint: { 'text-color': '#fff', 'text-halo-color': 'rgba(0,0,0,0.8)', 'text-halo-width': 1.2 },
     });
     m.addLayer({
+      id: 'imported-line',
+      type: 'line',
+      source: 'imported',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#c38bff', 'line-width': width(3), 'line-dasharray': [1.5, 1] },
+    });
+    // Already-travelled part of a route: muted grey.
+    m.addLayer({
+      id: 'route-done',
+      type: 'line',
+      source: 'route-done',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#8a948e', 'line-width': width(3.6), 'line-opacity': 0.85 },
+    });
+    // The way to follow: soft glow, white casing, bold orange, direction chevrons.
+    m.addLayer({
+      id: 'route-glow',
+      type: 'line',
+      source: 'route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ff7a00', 'line-width': width(10), 'line-blur': 6, 'line-opacity': 0.35 },
+    });
+    m.addLayer({
       id: 'route-casing',
       type: 'line',
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffffff', 'line-width': width(5) },
+      paint: { 'line-color': '#ffffff', 'line-width': width(5.2) },
     });
     m.addLayer({
       id: 'route-line',
       type: 'line',
       source: 'route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ff7a00', 'line-width': width(3.2) },
+      paint: { 'line-color': '#ff7a00', 'line-width': width(3.6) },
+    });
+    m.addLayer({
+      id: 'route-arrows',
+      type: 'symbol',
+      source: 'route',
+      minzoom: 13,
+      layout: {
+        'symbol-placement': 'line',
+        'symbol-spacing': 70,
+        'text-field': '›',
+        'text-font': FONTS.FONT_BOLD,
+        'text-size': ['interpolate', ['linear'], ['zoom'], 13, 16, 18, 26],
+        'text-keep-upright': false,
+        'text-rotation-alignment': 'map',
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
+        'text-offset': [0, -0.08],
+      },
+      paint: { 'text-color': '#ffffff' },
+    });
+    m.addLayer({
+      id: 'track-line',
+      type: 'line',
+      source: 'track',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#3ea6ff', 'line-width': width(3) },
     });
     m.addLayer({
       id: 'pois-circle',
@@ -386,13 +457,23 @@ export class MapEngine {
     return route;
   }
 
-  showRoute(route: Route | null) {
-    const src = this.map.getSource('route') as GeoJSONSource;
-    src.setData(
-      route
-        ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: route.coords } }] }
-        : EMPTY,
-    );
+  showRoute(route: Pick<Route, 'coords'> | null) {
+    const line = (c: Array<[number, number]>): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: c.length > 1 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: c } }] : [],
+    });
+    (this.map.getSource('route') as GeoJSONSource).setData(route ? line(route.coords) : EMPTY);
+    (this.map.getSource('route-done') as GeoJSONSource).setData(EMPTY);
+  }
+
+  /** While navigating: grey out the travelled part, keep the remaining way highlighted. */
+  setRouteProgress(coords: Array<[number, number]>, segIndex: number, snapped: [number, number]) {
+    const line = (c: Array<[number, number]>): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: c.length > 1 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: c } }] : [],
+    });
+    (this.map.getSource('route-done') as GeoJSONSource).setData(line([...coords.slice(0, segIndex + 1), snapped]));
+    (this.map.getSource('route') as GeoJSONSource).setData(line([snapped, ...coords.slice(segIndex + 1)]));
   }
 
   /**
@@ -401,20 +482,35 @@ export class MapEngine {
    * the latest clear Sentinel-2 scene (what the ground shows). Agreeing
    * detections are fused. Results are cached on the device for 30 days.
    */
-  async discoverHiddenTrails(signal?: AbortSignal): Promise<DiscoveryResult> {
+  async discoverHiddenTrails(signal?: AbortSignal, onStep?: (step: 'map' | 'gps' | 'imagery', status: 'start' | 'done' | 'failed') => void): Promise<DiscoveryResult> {
     if (this.map.getZoom() < 12) throw new Error('Zoom in closer to scan for hidden trails');
     const b = this.map.getBounds();
     const view: BBox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     const box = Discovery.scanBox(view);
     // OSM must be loaded first so only *unmapped* corridors come back.
+    onStep?.('map', 'start');
     await this.trails.ensure(box, signal);
+    onStep?.('map', 'done');
+    const track = <T,>(step: 'gps' | 'imagery', p: Promise<T>) => {
+      onStep?.(step, 'start');
+      return p.then(
+        (v) => (onStep?.(step, 'done'), v),
+        (e) => {
+          onStep?.(step, 'failed');
+          throw e;
+        },
+      );
+    };
     const [gps, img] = await Promise.allSettled([
-      this.discovery.scanGps(view, this.trails.osmWays(), signal),
-      this.discovery.scanImagery(view, this.trails.osmWays()),
+      track('gps', this.discovery.scanGps(view, this.trails.osmWays(), signal)),
+      track('imagery', this.discovery.scanImagery(view, this.trails.osmWays())),
     ]);
     const key = box.join(',');
     if (gps.status === 'fulfilled') this.detected.gps.set(key, gps.value.trails);
-    if (img.status === 'fulfilled') this.detected.imagery.set(key, img.value.trails);
+    if (img.status === 'fulfilled') {
+      this.detected.imagery.set(key, img.value.trails);
+      this.trails.setAligned(img.value.aligned);
+    }
     const merged = mergeDetections([...this.detected.gps.values()].flat(), [...this.detected.imagery.values()].flat());
     this.trails.setDetected('discovery', merged);
     const here = mergeDetections(
@@ -424,9 +520,136 @@ export class MapEngine {
     return {
       found: here.length,
       meters: Discovery.totalLength(here),
+      aligned: img.status === 'fulfilled' ? img.value.aligned.length : 0,
       gps: gps.status === 'fulfilled' ? gps.value.trails.length : (gps.reason as Error).message,
       imagery: img.status === 'fulfilled' ? img.value.trails.length : (img.reason as Error).message,
     };
+  }
+
+  /** Shows a recorded track or imported GPX line (null clears it). */
+  setLine(which: 'track' | 'imported', coords: Array<[number, number]> | Array<Array<[number, number]>> | null) {
+    const lines = !coords || !coords.length ? [] : Array.isArray(coords[0][0]) ? (coords as Array<Array<[number, number]>>) : [coords as Array<[number, number]>];
+    (this.map.getSource(which) as GeoJSONSource | undefined)?.setData({
+      type: 'FeatureCollection',
+      features: lines.filter((l) => l.length > 1).map((l) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: l } })),
+    });
+  }
+
+  private lookAheadAbort: AbortController | null = null;
+
+  /**
+   * While the map sits idle, quietly render the next zoom level of the view
+   * into the on-device cache so zooming in shows imagery instantly. Stops as
+   * soon as the user moves; never competes with visible tiles.
+   */
+  private lookAhead() {
+    const z = Math.floor(this.map.getZoom());
+    if (this.imageryMode !== 'truecolor' || z < 8 || z >= IMAGERY.maxZoom || !navigator.onLine) return;
+    this.lookAheadAbort?.abort();
+    const ac = (this.lookAheadAbort = new AbortController());
+    const b = this.map.getBounds();
+    const tiles = tilesInBBox([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], z + 1);
+    // Centre first: that is where the user most likely zooms.
+    const c = this.map.getCenter();
+    const cx = lngToTileX(c.lng, z + 1), cy = latToTileY(c.lat, z + 1);
+    tiles.sort((a, b2) => Math.hypot(a[1] + 0.5 - cx, a[2] + 0.5 - cy) - Math.hypot(b2[1] + 0.5 - cx, b2[2] + 0.5 - cy));
+    void (async () => {
+      for (const [tz, tx, ty] of tiles.slice(0, 24)) {
+        if (ac.signal.aborted) return;
+        // Yield to visible work: wait while the workers are busy.
+        while (this.imagery.busy > 0 && !ac.signal.aborted) await new Promise((r) => setTimeout(r, 250));
+        await this.imagery.prefetch(tz, tx, ty, 'truecolor', ac.signal).catch(() => {});
+      }
+    })();
+  }
+
+  private alignTimer: ReturnType<typeof setTimeout> | undefined;
+  private alignDone = new Set<string>();
+  private aligning = false;
+  /** Automatic AI alignment when zoomed in (zoom ≥ AUTO_ALIGN_ZOOM). */
+  autoAlign = true;
+  /** Automatic hidden-trail scanning (on view settle + every AUTO_SCAN_MS). */
+  autoScan = true;
+  private autoScanTimer: ReturnType<typeof setInterval> | undefined;
+  /** Where to scan when not the view centre (e.g. the user's position while navigating). */
+  scanFocus: [number, number] | null = null;
+
+  private scheduleAutoAlign() {
+    clearTimeout(this.alignTimer);
+    if (this.aligning || this.map.getZoom() < AUTO_SCAN_ZOOM) return;
+    if (!this.autoScan && !(this.autoAlign && this.map.getZoom() >= AUTO_ALIGN_ZOOM)) return;
+    // Wait until the user settles on an area.
+    this.alignTimer = setTimeout(() => void this.alignView(), 1500);
+  }
+
+  /** Re-checks every minute so moving (or navigating) keeps finding trails. */
+  startAutoScan() {
+    clearInterval(this.autoScanTimer);
+    this.autoScanTimer = setInterval(() => {
+      if (!this.autoScan || document.visibilityState !== 'visible' || !navigator.onLine) return;
+      if (this.map.getZoom() < AUTO_SCAN_ZOOM && !this.scanFocus) return;
+      void this.alignView();
+    }, AUTO_SCAN_MS);
+  }
+
+  /**
+   * Runs TrailNet on the area in view: corrects mapped trail geometry to match
+   * the imagery and adds any unmapped trails it finds. Once per area (cached).
+   */
+  async alignView() {
+    const b = this.map.getBounds();
+    const f = this.scanFocus;
+    const span = 0.03;
+    const view: BBox = f ? [f[0] - span, f[1] - span, f[0] + span, f[1] + span] : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const box = Discovery.scanBox(view);
+    const key = box.join(',');
+    // Scanning reads Sentinel-2 and GPS traces over the network: nothing to do without signal.
+    if (this.aligning || this.alignDone.has(key) || !navigator.onLine) return;
+    this.aligning = true;
+    this.emit('align:start', {});
+    try {
+      await this.trails.ensure(box);
+      const ways = () => this.trails.osmWays();
+      // Imagery (alignment + TrailNet) always; GPS traces too when auto-scan is on.
+      const [img, gps] = await Promise.allSettled([
+        this.discovery.scanImagery(view, ways()),
+        this.autoScan ? this.discovery.scanGps(view, ways()) : Promise.reject(new Error('off')),
+      ]);
+      if (img.status === 'rejected' && gps.status === 'rejected') throw img.reason;
+      this.alignDone.add(key);
+      if (img.status === 'fulfilled') {
+        if (this.autoAlign) this.trails.setAligned(img.value.aligned);
+        this.detected.imagery.set(key, img.value.trails);
+      }
+      if (gps.status === 'fulfilled') this.detected.gps.set(key, gps.value.trails);
+      const here = mergeDetections(gps.status === 'fulfilled' ? gps.value.trails : [], img.status === 'fulfilled' ? img.value.trails : []);
+      this.trails.setDetected('discovery', mergeDetections([...this.detected.gps.values()].flat(), [...this.detected.imagery.values()].flat()));
+      this.emit('align:done', { aligned: img.status === 'fulfilled' && this.autoAlign ? img.value.aligned.length : 0, detected: here.length });
+    } catch {
+      // Offline or no clear scene: keep OSM geometry; try again next time the view settles.
+    } finally {
+      this.aligning = false;
+    }
+  }
+
+  /** Plans everything needed to use the current view offline. */
+  async planOffline(): Promise<OfflinePlan> {
+    const b = this.map.getBounds();
+    const { maxZoom } = await this.imagery.staticMosaic();
+    return planOfflineArea([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], this.hires, maxZoom);
+  }
+
+  /** Plans one of the ready-made packs (country, mountains, cities). */
+  async planPack(id: string): Promise<OfflinePlan> {
+    const pack = PACKS.find((p) => p.id === id);
+    if (!pack) throw new Error(`Unknown pack ${id}`);
+    const { maxZoom } = await this.imagery.staticMosaic();
+    return planPack(pack, maxZoom, this.hires);
+  }
+
+  async downloadOffline(plan: OfflinePlan, progress: Progress, signal?: AbortSignal) {
+    const st = await this.imagery.staticMosaic();
+    return downloadPack(plan, { imagery: this.imagery, hires: this.hires, staticMaxZoom: st.maxZoom, staticExt: st.ext }, progress, signal);
   }
 
   flyTo(lngLat: [number, number], zoom = 14) {
@@ -439,6 +662,6 @@ export class MapEngine {
   destroy() {
     this.trailAbort?.abort();
     this.map.remove();
-    this.unregisterImagery();
+    this.imagery.unregister();
   }
 }

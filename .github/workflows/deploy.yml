@@ -4,7 +4,8 @@
 #
 # Data published next to the app under /data/:
 #  - trails/   Romania-wide trail cells from the Geofabrik OSM extract (rebuilt weekly)
-#  - s2/       pre-rendered country-scale Sentinel-2 mosaic, z6–z9 (rebuilt daily)
+#  - s2/       pre-rendered Sentinel-2 mosaic z6–z12, WebP (daily, incremental:
+#              only tiles whose scenes changed are re-rendered)
 #  - scenes.json  scene index snapshot (daily)
 #
 # One-time setup: Settings → Pages → Source: "GitHub Actions".
@@ -28,7 +29,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       IS_DEPLOY: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     steps:
@@ -60,7 +61,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data-cache/trails
-          key: trails-v1-${{ steps.week.outputs.week }}
+          key: trails-v2-${{ steps.week.outputs.week }}
 
       - uses: actions/setup-python@v5
         if: env.IS_DEPLOY == 'true' && steps.trails-cache.outputs.cache-hit != 'true'
@@ -77,17 +78,36 @@ jobs:
           curl -fsSL -o romania.osm.pbf https://download.geofabrik.de/europe/romania-latest.osm.pbf
           python scripts/data/build_trail_cells.py romania.osm.pbf data-cache/trails
 
-      - name: Pre-render Sentinel-2 mosaic and scene index
+      # Previous run's tiles + manifest, so only changed tiles are re-rendered.
+      - name: Restore pre-rendered mosaic
+        if: env.IS_DEPLOY == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: data-cache/mosaic
+          key: mosaic-v1-${{ github.run_id }}
+          restore-keys: mosaic-v1-
+
+      - name: Pre-render Sentinel-2 mosaic (z6–z12) and scene index
         if: env.IS_DEPLOY == 'true'
         continue-on-error: true
-        timeout-minutes: 40
-        run: npx tsx scripts/data/prerender-mosaic.ts dist/data 9
+        timeout-minutes: 120
+        env:
+          CONCURRENCY: '16'
+        run: npx tsx scripts/data/prerender-mosaic.ts data-cache/mosaic 12
+
+      - name: Save pre-rendered mosaic
+        if: env.IS_DEPLOY == 'true' && always()
+        uses: actions/cache/save@v4
+        with:
+          path: data-cache/mosaic
+          key: mosaic-v1-${{ github.run_id }}
 
       - name: Publish data
         if: env.IS_DEPLOY == 'true'
         run: |
           mkdir -p dist/data
           if [ -f data-cache/trails/meta.json ]; then cp -r data-cache/trails dist/data/trails; else echo "::warning::No trail cells this run; app will use Overpass"; fi
+          if [ -f data-cache/mosaic/s2/meta.json ]; then cp -r data-cache/mosaic/s2 dist/data/s2 && cp data-cache/mosaic/scenes.json dist/data/; rm -f dist/data/s2/manifest.json; else echo "::warning::No pre-rendered mosaic this run; app renders on device"; fi
           du -sh dist dist/data/* || true
 
       - uses: actions/upload-pages-artifact@v3

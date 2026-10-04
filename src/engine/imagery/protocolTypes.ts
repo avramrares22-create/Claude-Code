@@ -10,6 +10,10 @@ export interface RenderRequest {
   scenes: Array<{ id: string; epsg: number }>;
   /** Cache API key; changes whenever the chosen scenes or the renderer change. */
   cacheKey: string;
+  /** Scene-independent key, so offline packs still match after the scene index refreshes. */
+  stableKey: string;
+  /** Store in the offline-pack cache (never trimmed). */
+  persist?: boolean;
 }
 
 export type WorkerRequest = RenderRequest | { type: 'cancel'; id: number };

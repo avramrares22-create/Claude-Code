@@ -32,7 +32,7 @@ VAL = {"retezat", "rarau", "padis", "tarnave", "macin"}
 MIN_LABEL_DENSITY = 0.009  # below this a region is too under-mapped to trust its negatives
 CHIP = 96
 BATCH = 16
-STEPS = 150
+STEPS = int(os.environ.get("TRAILNET_STEPS", "150"))
 NEG_WEIGHT = 0.5
 HEADS = int(os.environ.get("TRAILNET_HEADS", "1"))
 torch.manual_seed(0)
