@@ -8,13 +8,14 @@ import type * as GeoJSON from 'geojson';
 // MapLibre 6 locates its worker next to its own module, which breaks once bundled.
 // `?worker&url` makes Vite bundle the worker (with its shared chunk) and give us its URL.
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import { IMAGERY, OVERPASS, ROMANIA_BBOX, ROMANIA_CENTER, type BBox } from './config';
+import { HIRES, IMAGERY, MAX_MAP_ZOOM, OVERPASS, ROMANIA_BBOX, ROMANIA_CENTER, type BBox, type HiresProvider } from './config';
+import { chooseHires } from './imagery/hires';
 import { imageryStats, imageryTileUrl, registerImageryProtocol } from './imagery/imageryProtocol';
 import type { ImageryMode } from './imagery/renderTile';
 import { SceneIndex } from './imagery/sceneIndex';
 import { TrailGraph } from './routing/graph';
 import { DEFAULT_PREFS, findRoute, type Route, type RoutePreferences } from './routing/router';
-import { buildBaseStyle, FONTS } from './style';
+import { buildBaseStyle, FONTS, hiresId } from './style';
 import { TerrariumElevation } from './terrain/elevation';
 import { TrailStore } from './trails/trailStore';
 import type { TrailKind } from './trails/types';
@@ -22,6 +23,7 @@ import type { TrailKind } from './trails/types';
 export interface EngineEvents {
   'imagery:index': { grids: number };
   'imagery:error': { message: string };
+  'imagery:hires': { provider: string | null };
   'trails:loading': Record<string, never>;
   'trails:loaded': { trails: number; pois: number; failedCells: number };
   'trail:click': { wayId: number; name: string; kind: TrailKind; difficulty: number; routes: string; lngLat: [number, number] };
@@ -52,6 +54,7 @@ export class MapEngine {
   private trailAbort: AbortController | null = null;
   private pendingSync = false;
   private imageryMode: ImageryMode | 'off' = 'truecolor';
+  private hires: HiresProvider | null = null;
 
   constructor(opts: EngineOptions) {
     maplibregl.setWorkerUrl(maplibreWorkerUrl);
@@ -70,7 +73,7 @@ export class MapEngine {
       zoom: opts.zoom ?? 6.5,
       maxBounds: [w - 3, s - 2, e + 3, n + 2],
       minZoom: 5,
-      maxZoom: 17.5,
+      maxZoom: MAX_MAP_ZOOM,
       maxPitch: 80,
       attributionControl: { compact: true },
       // Phones: cap pixel ratio so a 3x display doesn't render 9x the pixels.
@@ -87,6 +90,11 @@ export class MapEngine {
     this.ready = new Promise((resolve) => {
       this.map.once('style.load', () => {
         this.addEngineLayers();
+        void chooseHires().then((p) => {
+          this.hires = p;
+          this.applyImageryVisibility();
+          this.emit('imagery:hires', { provider: p?.label ?? null });
+        });
         this.bindInteractions();
         this.map.on('moveend', () => void this.loadTrailsForView());
         void this.loadTrailsForView();
@@ -263,12 +271,22 @@ export class MapEngine {
 
   setImageryMode(mode: ImageryMode | 'off') {
     this.imageryMode = mode;
-    if (mode === 'off') {
-      this.map.setLayoutProperty('imagery', 'visibility', 'none');
-      return;
+    if (mode !== 'off') (this.map.getSource('imagery') as maplibregl.RasterTileSource).setTiles([imageryTileUrl(mode)]);
+    this.applyImageryVisibility();
+  }
+
+  /** Sentinel mosaic always (unless off); high-res photos only in true colour. */
+  private applyImageryVisibility() {
+    const mode = this.imageryMode;
+    this.map.setLayoutProperty('imagery', 'visibility', mode === 'off' ? 'none' : 'visible');
+    for (const p of HIRES) {
+      const show = mode === 'truecolor' && this.hires?.id === p.id;
+      this.map.setLayoutProperty(hiresId(p.id), 'visibility', show ? 'visible' : 'none');
     }
-    this.map.setLayoutProperty('imagery', 'visibility', 'visible');
-    (this.map.getSource('imagery') as maplibregl.RasterTileSource).setTiles([imageryTileUrl(mode)]);
+  }
+
+  get hiresProvider(): HiresProvider | null {
+    return this.hires;
   }
 
   getImageryMode() {

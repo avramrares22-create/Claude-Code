@@ -21,6 +21,27 @@ export interface Level {
   resY: number;
 }
 
+/** Sentinel-2 scene classification window (SCL, 20 m), one class code per pixel. */
+export interface MaskWindow {
+  level: Level;
+  x0: number;
+  y0: number;
+  width: number;
+  height: number;
+  data: ArrayLike<number>;
+}
+
+/**
+ * SCL classes treated as "no data" so the next scene fills them:
+ * 1 saturated/defective, 3 cloud shadow, 8/9 cloud (medium/high), 10 thin cirrus.
+ * Snow (11) and dark terrain (2) are kept — they are real ground in the Carpathians.
+ */
+export const CLOUD_CLASSES = (() => {
+  const t = new Uint8Array(256);
+  for (const c of [1, 3, 8, 9, 10]) t[c] = 1;
+  return t;
+})();
+
 export interface RasterWindow {
   level: Level;
   /** Window offset/size in level pixels. */
@@ -31,6 +52,8 @@ export interface RasterWindow {
   /** Band-interleaved samples. */
   data: ArrayLike<number>;
   bands: number;
+  /** Optional per-pixel cloud mask for this scene. */
+  mask?: MaskWindow;
 }
 
 /**
@@ -195,6 +218,13 @@ function sample(win: RasterWindow, sx: number, sy: number, out: Float64Array): b
   return true;
 }
 
+function isCloud(m: MaskWindow, e: number, n: number): boolean {
+  const mx = Math.floor((e - m.level.originX) / m.level.resX) - m.x0;
+  const my = Math.floor((m.level.originY - n) / m.level.resY) - m.y0;
+  if (mx < 0 || my < 0 || mx >= m.width || my >= m.height) return false;
+  return CLOUD_CLASSES[m.data[my * m.width + mx]] === 1;
+}
+
 export interface PaintContext {
   mode: ImageryMode;
   toneLut: Uint8Array;
@@ -217,6 +247,7 @@ export function paintWindow(rgba: Uint8ClampedArray, pixels: Float64Array, win: 
     const sx = (pixels[p * 2] - level.originX) / level.resX - 0.5 - win.x0;
     const sy = (level.originY - pixels[p * 2 + 1]) / level.resY - 0.5 - win.y0;
     if (sx < -0.5 || sy < -0.5 || sx > win.width - 0.5 || sy > win.height - 0.5) continue;
+    if (win.mask && isCloud(win.mask, pixels[p * 2], pixels[p * 2 + 1])) continue;
     if (!sample(win, sx, sy, v)) continue;
     const o = p * 4;
     if (ctx.mode === 'truecolor') {

@@ -1,5 +1,19 @@
 /** Turns raw OSM tags into nature-app semantics: marked / path / track / hidden. */
-import type { Marking, OsmNode, OsmRelation, OsmWay, Poi, PoiKind, Tags, Trail, TrailRoute } from './types';
+import type {
+  Access,
+  Marking,
+  OsmNode,
+  OsmRelation,
+  OsmWay,
+  Poi,
+  PoiKind,
+  SurfaceClass,
+  Tags,
+  Trail,
+  TrailKind,
+  TrailRoute,
+  TravelMode,
+} from './types';
 
 const SAC: Record<string, number> = {
   hiking: 1,
@@ -75,17 +89,85 @@ export function hiddenScore(tags: Tags, inRoute: boolean): number {
 
 export const HIDDEN_THRESHOLD = 0.6;
 
+export const ROAD_HIGHWAYS = new Set(['tertiary', 'unclassified', 'residential', 'service']);
+const PATH_HIGHWAYS = new Set(['path', 'footway', 'bridleway', 'cycleway', 'steps', 'via_ferrata']);
+
+const ACCESS_KEYS: Record<TravelMode, string[]> = {
+  foot: ['access', 'foot'],
+  bike: ['access', 'vehicle', 'bicycle'],
+  moto: ['access', 'vehicle', 'motor_vehicle', 'motorcycle'],
+};
+
+function accessValue(v: string | undefined): Access | null {
+  if (!v) return null;
+  if (/^(yes|designated|permissive|destination|customers)$/.test(v)) return 'yes';
+  if (/^(no|private|forestry|agricultural|delivery|military|discouraged)$/.test(v)) return 'no';
+  return null;
+}
+
+/**
+ * Legal access for a travel mode. The most specific tag wins
+ * (motorcycle > motor_vehicle > vehicle > access); otherwise OSM defaults by
+ * road type. Romanian forest roads are usually closed to the public's motor
+ * vehicles (Codul Silvic) but rarely tagged, so untagged tracks stay 'unknown'.
+ */
+export function accessFor(tags: Tags, mode: TravelMode): Access {
+  const keys = ACCESS_KEYS[mode];
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const a = accessValue(tags[keys[i]]);
+    if (a) return a;
+  }
+  const hw = tags.highway;
+  if (mode === 'moto') {
+    if (PATH_HIGHWAYS.has(hw)) return 'no';
+    if (tags['4wd_only'] === 'yes') return 'unknown';
+    return hw === 'track' ? 'unknown' : 'yes';
+  }
+  if (mode === 'bike') {
+    if (hw === 'steps' || hw === 'via_ferrata') return 'no';
+    return hw === 'cycleway' || ROAD_HIGHWAYS.has(hw) ? 'yes' : 'unknown';
+  }
+  return hw === 'cycleway' && tags.foot !== 'yes' ? 'unknown' : 'yes';
+}
+
+const SURFACES: Array<[RegExp, SurfaceClass]> = [
+  [/^(asphalt|concrete.*|paved|paving_stones|sett|cobblestone|metal|wood)$/, 'paved'],
+  [/^(gravel|fine_gravel|compacted|pebblestone|chipseal)$/, 'gravel'],
+  [/^(dirt|earth|ground|mud|unpaved|sand|clay|soil)$/, 'dirt'],
+  [/^(grass|grass_paver|meadow)$/, 'grass'],
+  [/^(rock|stone|bare_rock|scree|stepping_stones)$/, 'rock'],
+];
+const GRADE_SURFACE: SurfaceClass[] = ['unknown', 'gravel', 'gravel', 'dirt', 'grass', 'grass'];
+
+export function surfaceClass(tags: Tags): SurfaceClass {
+  const s = tags.surface;
+  if (s) for (const [re, c] of SURFACES) if (re.test(s)) return c;
+  const grade = trackGrade(tags);
+  if (grade) return GRADE_SURFACE[grade];
+  if (ROAD_HIGHWAYS.has(tags.highway) && tags.highway !== 'service') return 'paved';
+  return 'unknown';
+}
+
+export function trackGrade(tags: Tags): number {
+  const m = /^grade([1-5])$/.exec(tags.tracktype ?? '');
+  return m ? Number(m[1]) : 0;
+}
+
 export function classifyWay(way: OsmWay, routes: TrailRoute[]): Trail {
   const t = way.tags;
   const inRoute = routes.length > 0;
-  const hs = hiddenScore(t, inRoute);
-  const kind = inRoute
+  const isRoad = ROAD_HIGHWAYS.has(t.highway);
+  const hs = isRoad ? 0 : hiddenScore(t, inRoute);
+  const kind: TrailKind = inRoute
     ? 'marked'
-    : hs >= HIDDEN_THRESHOLD
-      ? 'hidden'
-      : t.highway === 'track'
-        ? 'track'
-        : 'path';
+    : isRoad
+      ? 'road'
+      : hs >= HIDDEN_THRESHOLD
+        ? 'hidden'
+        : t.highway === 'track'
+          ? 'track'
+          : 'path';
+  const mtb = Number.parseInt(t['mtb:scale'] ?? '', 10);
   return {
     wayId: way.id,
     nodeIds: way.nodes,
@@ -95,7 +177,13 @@ export function classifyWay(way: OsmWay, routes: TrailRoute[]): Trail {
     hiddenScore: hs,
     difficulty: SAC[t.sac_scale] ?? 0,
     surface: t.surface,
+    surfaceClass: surfaceClass(t),
+    trackGrade: trackGrade(t),
+    mtbScale: Number.isFinite(mtb) ? Math.max(0, Math.min(6, mtb)) : -1,
+    access: { foot: accessFor(t, 'foot'), bike: accessFor(t, 'bike'), moto: accessFor(t, 'moto') },
     routes,
+    source: 'osm',
+    confidence: 1,
     tags: t,
   };
 }

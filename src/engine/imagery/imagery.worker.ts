@@ -16,6 +16,7 @@ import {
   utmExtent,
   windowFor,
   type PaintContext,
+  type MaskWindow,
   type RasterWindow,
 } from './renderTile';
 import { deriveSceneFiles, getSceneAssets, type SceneAssets } from './stac';
@@ -74,12 +75,14 @@ async function fetchFrom(
   const li = chooseLevel(cogs[0].levels, targetRes);
   const w = windowFor(cogs[0].levels[li], proj.ext);
   if (!w) return null;
-  const reads = await Promise.all(cogs.map((c) => readWindow(c, li, w, signal)));
+  // The preview is already a low-res overview; per-pixel cloud masking pays off from z9 up.
+  const maskP = usePreview ? Promise.resolve(undefined) : readMask(files.scl, proj, targetRes, signal);
+  const [reads, mask] = await Promise.all([Promise.all(cogs.map((c) => readWindow(c, li, w, signal))), maskP]);
   const { level, win } = reads[0];
   const width = win[2] - win[0];
   const height = win[3] - win[1];
   if (req.mode === 'truecolor') {
-    return { level, x0: win[0], y0: win[1], width, height, data: reads[0].data, bands: 3 };
+    return { level, x0: win[0], y0: win[1], width, height, data: reads[0].data, bands: 3, mask };
   }
   // Interleave red + nir into one 2-band window.
   const n = width * height;
@@ -90,7 +93,22 @@ async function fetchFrom(
     both[i * 2] = red[i];
     both[i * 2 + 1] = nir[i];
   }
-  return { level, x0: win[0], y0: win[1], width, height, data: both, bands: 2 };
+  return { level, x0: win[0], y0: win[1], width, height, data: both, bands: 2, mask };
+}
+
+/** Reads the SCL window covering the tile. A missing/broken mask never blocks imagery. */
+async function readMask(url: string, proj: Projected, targetRes: number, signal: AbortSignal): Promise<MaskWindow | undefined> {
+  try {
+    const cog = await getCog(url);
+    const li = chooseLevel(cog.levels, targetRes);
+    const w = windowFor(cog.levels[li], proj.ext);
+    if (!w) return undefined;
+    const r = await readWindow(cog, li, w, signal);
+    return { level: r.level, x0: r.win[0], y0: r.win[1], width: r.win[2] - r.win[0], height: r.win[3] - r.win[1], data: r.data };
+  } catch (err) {
+    if (signal.aborted) throw err;
+    return undefined;
+  }
 }
 
 async function fetchScene(

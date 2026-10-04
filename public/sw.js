@@ -23,9 +23,11 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Esri imagery is deliberately not cached: its terms restrict offline storage.
 const CACHE_FIRST = [
   /^https:\/\/s3\.amazonaws\.com\/elevation-tiles-prod\//,
   /^https:\/\/tiles\.openfreemap\.org\//,
+  /^https:\/\/geoportal\.ancpi\.ro\/maps\/rest\/services\/Ortofoto\//,
 ];
 
 self.addEventListener('fetch', (event) => {

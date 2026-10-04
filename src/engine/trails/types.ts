@@ -25,7 +25,22 @@ export interface OsmNode {
 
 export type OsmElement = OsmWay | OsmRelation | OsmNode;
 
-export type TrailKind = 'marked' | 'path' | 'track' | 'hidden';
+/**
+ * - marked: part of a waymarked hiking/MTB route
+ * - path: footpath / bridleway / singletrack
+ * - track: forest or agricultural track (drum forestier, drum de câmp)
+ * - road: minor rural road, used to reach trailheads
+ * - hidden: faint, informal or unmapped-feeling path most apps drop
+ * - detected: not in OSM at all; found from GPS traces or imagery
+ */
+export type TrailKind = 'marked' | 'path' | 'track' | 'road' | 'hidden' | 'detected';
+
+export type TravelMode = 'foot' | 'bike' | 'moto';
+
+/** Legal access for a mode: explicit yes, explicit no, or unknown (no tag, default rules). */
+export type Access = 'yes' | 'no' | 'unknown';
+
+export type SurfaceClass = 'paved' | 'gravel' | 'dirt' | 'grass' | 'rock' | 'unknown';
 
 /** Romanian trail markings: colour + shape (bandă, cruce, punct, triunghi). */
 export interface Marking {
@@ -50,7 +65,17 @@ export interface Trail {
   /** SAC scale 1 (hiking) .. 6 (difficult alpine); 0 = unknown. */
   difficulty: number;
   surface?: string;
+  surfaceClass: SurfaceClass;
+  /** tracktype grade1 (solid) .. grade5 (soft); 0 = unknown. */
+  trackGrade: number;
+  /** mtb:scale 0..6; -1 = unknown. */
+  mtbScale: number;
+  access: Record<TravelMode, Access>;
   routes: TrailRoute[];
+  /** Where the geometry came from. */
+  source: 'osm' | 'gps' | 'imagery';
+  /** 0..1 confidence for detected trails (1 for OSM). */
+  confidence: number;
   tags: Tags;
 }
 

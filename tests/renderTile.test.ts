@@ -133,3 +133,25 @@ describe('chooseLevel', () => {
     expect(chooseLevel(levels, 5000)).toBe(5);
   });
 });
+
+describe('cloud mask', () => {
+  it('skips pixels the SCL marks as cloud, keeps snow', () => {
+    const px = projectTilePixels(z, tx, ty, zone35);
+    const win = syntheticWindow(utmExtent(px));
+    // 20 m mask over the same area: left half cloud (9), right half snow (11).
+    const ext = utmExtent(px);
+    const mlevel = { ...win.level, resX: 20, resY: 20, width: 5490, height: 5490 };
+    const mw = windowFor(mlevel, ext)!;
+    const width = mw[2] - mw[0];
+    const height = mw[3] - mw[1];
+    const data = new Uint8Array(width * height);
+    for (let r = 0; r < height; r++) for (let c = 0; c < width; c++) data[r * width + c] = c < width / 2 ? 9 : 11;
+    const rgba = new Uint8ClampedArray(256 * 256 * 4);
+    const filled = paintWindow(rgba, px, { ...win, mask: { level: mlevel, x0: mw[0], y0: mw[1], width, height, data } }, identity);
+    expect(filled).toBeGreaterThan(256 * 256 * 0.3);
+    expect(filled).toBeLessThan(256 * 256 * 0.7);
+    // Left edge masked (cloud), right edge painted (snow is real ground).
+    expect(rgba[(128 * 256 + 2) * 4 + 3]).toBe(0);
+    expect(rgba[(128 * 256 + 253) * 4 + 3]).toBe(255);
+  });
+});

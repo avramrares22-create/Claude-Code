@@ -8,14 +8,21 @@ import { kvGet, kvSet } from '../util/kvStore';
 import { classifyPoi, classifyWay, routeFromRelation } from './classify';
 import { fetchOverpass } from './overpass';
 import type * as GeoJSON from 'geojson';
-import type { OsmElement, OsmNode, OsmRelation, OsmWay, Poi, Trail, TrailRoute } from './types';
+import type { OsmElement, OsmNode, OsmRelation, OsmWay, Poi, Trail, TrailKind, TrailRoute } from './types';
 
 export type Loader = (bbox: BBox, signal?: AbortSignal) => Promise<OsmElement[]>;
 
 const CELL_TTL = 7 * 86_400_000;
 const MAX_CELLS_PER_VIEW = 16;
 
-const DEFAULT_COLORS = { path: '#f3e6c4', track: '#c9a46a', hidden: '#ff5fc8', marked: '#d7263d' } as const;
+export const KIND_COLORS: Record<TrailKind, string> = {
+  marked: '#d7263d',
+  path: '#f3e6c4',
+  track: '#d9a55b',
+  road: '#e8e8e8',
+  hidden: '#ff5fc8',
+  detected: '#35e0ff',
+};
 
 export class TrailStore {
   private ways = new Map<number, OsmWay>();
@@ -24,6 +31,8 @@ export class TrailStore {
   private cells = new Map<string, Promise<void>>();
   private listeners = new Set<() => void>();
   private derived: { trails: Trail[]; pois: Poi[] } | null = null;
+  /** Trails found outside OSM (GPS traces, imagery), keyed by detector. */
+  private detected = new Map<string, Trail[]>();
 
   constructor(
     private loader: Loader = fetchOverpass,
@@ -74,6 +83,18 @@ export class TrailStore {
     for (const fn of this.listeners) fn();
   }
 
+  /** Replaces the detected trails of one detector (e.g. 'gps', 'imagery'). */
+  setDetected(source: string, trails: Trail[]) {
+    this.detected.set(source, trails);
+    this.derived = null;
+    for (const fn of this.listeners) fn();
+  }
+
+  /** Raw OSM node coordinates of loaded ways, for snapping detected trails onto the network. */
+  osmWays(): Iterable<OsmWay> {
+    return this.ways.values();
+  }
+
   private derive() {
     if (this.derived) return this.derived;
     const routesByWay = new Map<number, TrailRoute[]>();
@@ -87,6 +108,7 @@ export class TrailStore {
       }
     }
     const trails = [...this.ways.values()].map((w) => classifyWay(w, routesByWay.get(w.id) ?? []));
+    for (const list of this.detected.values()) trails.push(...list);
     const pois = [...this.nodes.values()].map(classifyPoi).filter((p): p is Poi => p !== null);
     this.derived = { trails, pois };
     return this.derived;
@@ -113,9 +135,17 @@ export class TrailStore {
           name: t.name ?? t.routes[0]?.name ?? '',
           hidden: t.hiddenScore,
           difficulty: t.difficulty,
-          color: t.routes[0]?.marking?.color ?? DEFAULT_COLORS[t.kind],
+          color: t.routes[0]?.marking?.color ?? KIND_COLORS[t.kind],
           shape: t.routes[0]?.marking?.shape ?? '',
           routes: t.routes.map((r) => r.name).filter(Boolean).join(' · '),
+          surface: t.surfaceClass,
+          grade: t.trackGrade,
+          mtb: t.mtbScale,
+          foot: t.access.foot,
+          bike: t.access.bike,
+          moto: t.access.moto,
+          source: t.source,
+          confidence: t.confidence,
         },
       })),
     };

@@ -1,61 +1,98 @@
 /**
- * Hiking router: A* over the trail graph minimising walking time.
- *
- * Time model: Tobler's hiking function (6·e^(-3.5·|slope+0.05|) km/h) scaled by
- * trail kind and SAC difficulty. Preferences then bias the *cost* (not the
- * reported time), e.g. to seek out hidden trails.
+ * Off-road router: A* over the trail graph minimising travel time for a mode
+ * (foot / bike / moto). Edge speeds come from a pluggable RouteModel (expert
+ * rules or the learned RouteNet). Preferences then bias the *cost* — not the
+ * reported time — e.g. to seek hidden trails or stay off asphalt.
  */
 import { haversine } from '../geo/geodesy';
 import { HIDDEN_THRESHOLD } from '../trails/classify';
-import type { Trail } from '../trails/types';
+import type { Trail, TravelMode } from '../trails/types';
 import type { TrailGraph } from './graph';
+import { expertModel, type RouteModel } from './routeModel';
+
+export { toblerSpeed } from './routeModel';
 
 export interface RoutePreferences {
+  mode: TravelMode;
   /** -1 avoid hidden trails … 0 neutral … 1 actively seek them. */
   hidden: number;
-  /** Highest SAC grade allowed (1..6). */
+  /** 0 neutral … 1 strongly prefer unpaved ways over asphalt. */
+  offroad: number;
+  /** Highest SAC grade allowed for foot (1..6). */
   maxDifficulty: number;
+  /** Highest mtb:scale allowed for bike (0..6). */
+  maxMtbScale: number;
+  /** Refuse ways whose legal access for this mode is unknown (e.g. untagged forest roads for moto). */
+  strictAccess: boolean;
 }
 
-export const DEFAULT_PREFS: RoutePreferences = { hidden: 0, maxDifficulty: 4 };
+export const DEFAULT_PREFS: RoutePreferences = {
+  mode: 'foot',
+  hidden: 0,
+  offroad: 0,
+  maxDifficulty: 4,
+  maxMtbScale: 3,
+  strictAccess: false,
+};
 
 export interface Route {
+  mode: TravelMode;
   coords: Array<[number, number]>;
   elevations: number[];
   distance: number;
   ascent: number;
   descent: number;
-  /** Estimated walking time in seconds. */
+  /** Estimated travel time in seconds. */
   duration: number;
   wayIds: number[];
-  /** Fraction of distance on hidden trails. */
+  /** Fraction of distance on hidden or detected trails. */
   hiddenShare: number;
+  /** Fraction of distance on unpaved surfaces. */
+  offroadShare: number;
+  /** Fraction of distance where legal access for this mode is not confirmed. */
+  unknownAccessShare: number;
   snapDistance: [number, number];
+  model: string;
 }
 
-const TOBLER_MAX = 6 / 3.6; // m/s on a gentle descent
-
-export function toblerSpeed(slope: number): number {
-  return (6 * Math.exp(-3.5 * Math.abs(slope + 0.05))) / 3.6;
+function slopeOf(length: number, elevA: number, elevB: number): number {
+  const s = Number.isFinite(elevA) && Number.isFinite(elevB) && length > 0 ? (elevB - elevA) / length : 0;
+  return Math.max(-1, Math.min(1, s));
 }
 
-export function terrainFactor(t: Trail): number {
-  let f = t.kind === 'hidden' ? 0.85 : t.kind === 'path' ? 0.95 : 1;
-  if (t.difficulty >= 5) f *= 0.45;
-  else if (t.difficulty >= 4) f *= 0.6;
-  else if (t.difficulty >= 3) f *= 0.8;
-  return f;
+/** Seconds to traverse an edge from a to b (Infinity if impassable). */
+export function edgeTime(
+  length: number,
+  elevA: number,
+  elevB: number,
+  trail: Trail,
+  mode: TravelMode = 'foot',
+  model: RouteModel = expertModel,
+): number {
+  const v = model.speed(mode, trail, slopeOf(length, elevA, elevB));
+  return v > 0 ? length / v : Infinity;
 }
 
-/** Seconds to traverse an edge from a to b. */
-export function edgeTime(length: number, elevA: number, elevB: number, trail: Trail): number {
-  const slope = Number.isFinite(elevA) && Number.isFinite(elevB) && length > 0 ? (elevB - elevA) / length : 0;
-  const clamped = Math.max(-1, Math.min(1, slope));
-  return length / (toblerSpeed(clamped) * terrainFactor(trail));
+/** Hard constraints: legal access and difficulty limits. */
+export function allowed(t: Trail, prefs: RoutePreferences): boolean {
+  const a = t.access[prefs.mode];
+  if (a === 'no' || (a === 'unknown' && prefs.strictAccess)) return false;
+  if (prefs.mode === 'foot' && t.difficulty > prefs.maxDifficulty) return false;
+  if (prefs.mode === 'bike' && t.mtbScale > prefs.maxMtbScale) return false;
+  return true;
 }
 
+const isHidden = (t: Trail) => t.kind === 'detected' || t.hiddenScore >= HIDDEN_THRESHOLD;
+
+/** Cost multiplier from soft preferences; bounded to [MIN_MULT, ∞). */
 function preferenceMultiplier(t: Trail, prefs: RoutePreferences): number {
-  return 1 - 0.4 * prefs.hidden * t.hiddenScore;
+  const hiddenness = t.kind === 'detected' ? 1 : t.hiddenScore;
+  let m = 1 - 0.4 * prefs.hidden * hiddenness;
+  if (prefs.offroad > 0 && t.surfaceClass === 'paved') m *= 1 + 0.8 * prefs.offroad;
+  // Detected trails are less certain to exist: a small, confidence-weighted surcharge.
+  if (t.kind === 'detected') m *= 1 + 0.3 * (1 - t.confidence);
+  if (t.access[prefs.mode] === 'unknown') m *= 1.1;
+  return m;
 }
 
 class MinHeap {
@@ -104,15 +141,19 @@ export function findRoute(
   g: TrailGraph,
   from: [number, number],
   to: [number, number],
-  prefs: RoutePreferences = DEFAULT_PREFS,
+  prefsIn: Partial<RoutePreferences> = {},
+  model: RouteModel = expertModel,
   snapRadius = 500,
 ): Route | null {
+  const prefs: RoutePreferences = { ...DEFAULT_PREFS, ...prefsIn };
+  const mode = prefs.mode;
   const a = g.nearest(from[0], from[1], snapRadius);
   const b = g.nearest(to[0], to[1], snapRadius);
   if (!a || !b) return null;
   const elev = g.elev.length === g.size ? g.elev : new Float32Array(g.size).fill(NaN);
   const minMult = Math.min(1, 1 - 0.4 * prefs.hidden);
-  const h = (i: number) => (haversine(g.lng[i], g.lat[i], g.lng[b.node], g.lat[b.node]) / TOBLER_MAX) * minMult;
+  const vmax = model.maxSpeed(mode);
+  const h = (i: number) => (haversine(g.lng[i], g.lat[i], g.lng[b.node], g.lat[b.node]) / vmax) * minMult;
 
   const cost = new Float64Array(g.size).fill(Infinity);
   const prev = new Int32Array(g.size).fill(-1);
@@ -130,8 +171,10 @@ export function findRoute(
     for (const e of g.adj[u]) {
       if (closed[e.to]) continue;
       const t = g.trails[e.trail];
-      if (t.difficulty > prefs.maxDifficulty) continue;
-      const c = cost[u] + edgeTime(e.length, elev[u], elev[e.to], t) * preferenceMultiplier(t, prefs);
+      if (!allowed(t, prefs)) continue;
+      const dt = edgeTime(e.length, elev[u], elev[e.to], t, mode, model);
+      if (!Number.isFinite(dt)) continue;
+      const c = cost[u] + dt * preferenceMultiplier(t, prefs);
       if (c < cost[e.to]) {
         cost[e.to] = c;
         prev[e.to] = u;
@@ -146,22 +189,26 @@ export function findRoute(
   for (let n = b.node; n >= 0; n = prev[n]) path.push(n);
   path.reverse();
 
-  let distance = 0, ascent = 0, descent = 0, duration = 0, hiddenLen = 0;
+  let distance = 0, ascent = 0, descent = 0, duration = 0, hiddenLen = 0, offroadLen = 0, unknownLen = 0;
   const wayIds: number[] = [];
   for (let i = 1; i < path.length; i++) {
     const pe = prevEdge[path[i]]!;
     const t = g.trails[pe.trail];
     const ea = elev[path[i - 1]], eb = elev[path[i]];
     distance += pe.length;
-    duration += edgeTime(pe.length, ea, eb, t);
+    duration += edgeTime(pe.length, ea, eb, t, mode, model);
     if (Number.isFinite(ea) && Number.isFinite(eb)) {
       if (eb > ea) ascent += eb - ea;
       else descent += ea - eb;
     }
-    if (t.hiddenScore >= HIDDEN_THRESHOLD) hiddenLen += pe.length;
+    if (isHidden(t)) hiddenLen += pe.length;
+    if (t.surfaceClass !== 'paved') offroadLen += pe.length;
+    if (t.access[mode] === 'unknown') unknownLen += pe.length;
     if (wayIds[wayIds.length - 1] !== t.wayId) wayIds.push(t.wayId);
   }
   return {
+    mode,
+    model: model.name,
     coords: path.map((n) => [g.lng[n], g.lat[n]]),
     elevations: path.map((n) => elev[n]),
     distance,
@@ -170,6 +217,8 @@ export function findRoute(
     duration,
     wayIds,
     hiddenShare: distance > 0 ? hiddenLen / distance : 0,
+    offroadShare: distance > 0 ? offroadLen / distance : 0,
+    unknownAccessShare: distance > 0 ? unknownLen / distance : 0,
     snapDistance: [a.dist, b.dist],
   };
 }

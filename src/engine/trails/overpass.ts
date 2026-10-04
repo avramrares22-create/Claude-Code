@@ -5,9 +5,12 @@ import type { OsmElement } from './types';
 export function trailQuery([w, s, e, n]: BBox): string {
   const b = `${s},${w},${n},${e}`;
   return `[out:json][timeout:25];
-way["highway"~"^(path|track|footway|bridleway|steps|via_ferrata)$"](${b})->.w;
+(
+  way["highway"~"^(path|track|footway|bridleway|cycleway|steps|via_ferrata|tertiary|unclassified|residential)$"](${b});
+  way["highway"="service"]["service"!~"^(driveway|parking_aisle|drive-through)$"](${b});
+)->.w;
 .w out body geom qt;
-relation["route"~"^(hiking|foot)$"](${b})->.r;
+relation["route"~"^(hiking|foot|mtb|bicycle)$"](${b})->.r;
 .r out body qt;
 (
   node["natural"~"^(peak|saddle|spring|cave_entrance)$"](${b});

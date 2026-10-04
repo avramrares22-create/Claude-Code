@@ -1,7 +1,7 @@
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './styles.css';
 import * as maplibregl from 'maplibre-gl';
-import { MapEngine, type ImageryMode, type Route, type RoutePreferences } from './engine';
+import { MapEngine, type ImageryMode, type Route, type RoutePreferences, type TrailKind } from './engine';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const statusEl = $('status');
@@ -62,7 +62,14 @@ const fmtTime = (s: number) => {
   return h ? `${h}h ${m}m` : `${m} min`;
 };
 const SAC_LABEL = ['unknown', 'T1 hiking', 'T2 mountain', 'T3 demanding', 'T4 alpine', 'T5 hard alpine', 'T6 extreme'];
-const KIND_LABEL = { marked: 'Marked trail', path: 'Path', track: 'Forest track', hidden: 'Hidden trail' } as const;
+const KIND_LABEL: Record<TrailKind, string> = {
+  marked: 'Marked trail',
+  path: 'Path',
+  track: 'Forest track',
+  road: 'Rural road',
+  hidden: 'Hidden trail',
+  detected: 'Detected trail',
+};
 
 // ------------------------------------------------------------------ engine events
 

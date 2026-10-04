@@ -13,7 +13,7 @@ export const STAC = {
   lookbackDays: 90,
   maxCloudCover: 15,
   /** Scenes kept per Sentinel-2 grid square; extras fill nodata/edge gaps. */
-  scenesPerGrid: 3,
+  scenesPerGrid: 4,
 } as const;
 
 export const IMAGERY = {
@@ -22,7 +22,7 @@ export const IMAGERY = {
   /** Sentinel-2 is 10 m/px; z14 is ~6.6 m/px at Romania's latitude, beyond that MapLibre overzooms. */
   maxZoom: 14,
   /** Bump to invalidate every cached rendered tile after a renderer change. */
-  rendererVersion: 1,
+  rendererVersion: 2,
 } as const;
 
 /** Mapzen/AWS Terrarium DEM — public, CORS enabled, no key. */
@@ -52,3 +52,46 @@ export const OVERPASS = {
   cellZoom: 11,
   minZoom: 11,
 } as const;
+
+/**
+ * Sub-metre imagery for walking/riding zoom levels. Sentinel-2 (10 m) stays the
+ * fresh base layer up to z14; from there the best reachable high-res source
+ * takes over and MapLibre overzooms past its native maximum.
+ */
+export interface HiresProvider {
+  id: 'ancpi' | 'esri';
+  label: string;
+  tiles: string;
+  /** Native maximum zoom; higher zooms are upscaled. */
+  maxZoom: number;
+  attribution: string;
+  /** A tile URL used to check the provider is reachable from this device. */
+  probe: string;
+}
+
+export const HIRES: HiresProvider[] = [
+  {
+    // ANCPI national orthophoto (2016–2019 flights, ~0.5 m). Dynamic ArcGIS export
+    // rendered straight into Web Mercator, so any zoom works.
+    id: 'ancpi',
+    label: 'ANCPI Ortofoto',
+    tiles:
+      'https://geoportal.ancpi.ro/maps/rest/services/Ortofoto/Ortofoto2019/MapServer/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=256,256&format=jpg&f=image',
+    maxZoom: 19,
+    attribution: 'Ortofotoplan © ANCPI',
+    probe:
+      'https://geoportal.ancpi.ro/maps/rest/services/Ortofoto/Ortofoto2019/MapServer/export?bbox=2834000,5688000,2834300,5688300&bboxSR=3857&imageSR=3857&size=64,64&format=jpg&f=image',
+  },
+  {
+    id: 'esri',
+    label: 'Esri World Imagery',
+    tiles: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    maxZoom: 18,
+    attribution: 'Imagery © Esri, Maxar, Earthstar Geographics',
+    probe: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/14/5766/9278',
+  },
+];
+
+/** Zoom where high-res imagery fades in over the Sentinel mosaic. */
+export const HIRES_FROM_ZOOM = 13.5;
+export const MAX_MAP_ZOOM = 21;

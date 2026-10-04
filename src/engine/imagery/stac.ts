@@ -17,6 +17,8 @@ export interface SceneAssets {
   visual: string;
   red: string;
   nir: string;
+  /** Scene classification (clouds, shadows, snow…), 20 m. */
+  scl: string;
 }
 
 interface StacItem {
@@ -131,7 +133,13 @@ export function deriveSceneFiles(id: string): SceneFiles | null {
   const m = /^S2[A-D]_T(\d{2})([C-X])([A-Z]{2})_(\d{4})(\d{2})\d{2}T\d{6}_L2A$/.exec(id);
   if (!m) return null;
   const dir = `${C1_BUCKET}/${Number(m[1])}/${m[2]}/${m[3]}/${m[4]}/${Number(m[5])}/${id}`;
-  return { visual: `${dir}/TCI.tif`, red: `${dir}/B04.tif`, nir: `${dir}/B08.tif`, preview: `${dir}/L2A_PVI.tif` };
+  return {
+    visual: `${dir}/TCI.tif`,
+    red: `${dir}/B04.tif`,
+    nir: `${dir}/B08.tif`,
+    scl: `${dir}/SCL.tif`,
+    preview: `${dir}/L2A_PVI.tif`,
+  };
 }
 
 const assetCache = new Map<string, Promise<SceneAssets>>();
@@ -147,8 +155,8 @@ export function getSceneAssets(id: string): Promise<SceneAssets> {
       })
       .then((item) => {
         const a = item.assets ?? {};
-        if (!a.visual || !a.red || !a.nir) throw new Error(`Scene ${id} is missing assets`);
-        return { visual: a.visual.href, red: a.red.href, nir: a.nir.href };
+        if (!a.visual || !a.red || !a.nir || !a.scl) throw new Error(`Scene ${id} is missing assets`);
+        return { visual: a.visual.href, red: a.red.href, nir: a.nir.href, scl: a.scl.href };
       });
     p.catch(() => assetCache.delete(id));
     assetCache.set(id, p);
