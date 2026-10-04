@@ -352,7 +352,7 @@ def main(src: str, out_dir: str):
                 ctx_index[key] = len(ctx_list)
                 ctx_list.append(["", county])
             return ctx_index[key]
-        loc = nearest(settle_tree, settle, x, y, own)
+        loc = inside_town(x, y) or nearest(settle_tree, settle, x, y, own)
         d = nearest(dist_tree, dist_, x, y, own, max_km=1.6) if dist_ else None
         parts = []
         if d and loc and loc["cat"] == "city" and (own is None or own["cat"] != "district"):
@@ -364,6 +364,25 @@ def main(src: str, out_dir: str):
             ctx_index[key] = len(ctx_list)
             ctx_list.append([key[0], county])
         return ctx_index[key]
+
+    # Cities/towns by admin bbox (0.1° buckets): a point inside Brașov's boundary belongs to Brașov,
+    # even when a village centre is closer.
+    town_grid = defaultdict(list)
+    for e in settle:
+        b = e["bbox"]
+        if e["cat"] in ("city", "town") and b and (b[2] - b[0]) < 0.6:
+            for gx in range(math.floor(b[0] * 10), math.floor(b[2] * 10) + 1):
+                for gy in range(math.floor(b[1] * 10), math.floor(b[3] * 10) + 1):
+                    town_grid[(gx, gy)].append(e)
+
+    def inside_town(x, y):
+        best, area = None, 1e9
+        for e in town_grid.get((math.floor(x * 10), math.floor(y * 10)), ()):
+            b = e["bbox"]
+            a = (b[2] - b[0]) * (b[3] - b[1])
+            if b[0] <= x <= b[2] and b[1] <= y <= b[3] and a < area:
+                best, area = e, a
+        return best
 
     settle_tree = cKDTree(np.array([[e["x"] * math.cos(math.radians(46)), e["y"]] for e in settle])) if settle else None
     dist_tree = cKDTree(np.array([[e["x"] * math.cos(math.radians(46)), e["y"]] for e in dist_])) if dist_ else None

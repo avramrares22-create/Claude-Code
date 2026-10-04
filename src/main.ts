@@ -40,6 +40,8 @@ import { icons } from './ui/icons';
 import { location, WakeLock, type Fix } from './ui/location';
 import { profileData, renderProfile } from './ui/profile';
 import { searchLocal, searchPlaces, type Place } from './ui/search';
+import { browse, routeGeometry, searchOffline, warmUp, type SearchResult } from './ui/searchClient';
+import { CAT_LABEL, type Cat } from './engine/search/categories';
 import { Sheet } from './ui/sheet';
 import { toast } from './ui/toast';
 
@@ -223,58 +225,184 @@ function* localPlaces(): Generator<Place> {
   for (const pk of PACKS) yield { name: pk.name, detail: 'offline pack area', kind: 'town', lngLat: [(pk.bbox[0] + pk.bbox[2]) / 2, (pk.bbox[1] + pk.bbox[3]) / 2], zoom: pk.kind === 'country' ? 6 : 11 };
 }
 
+const RECENT_KEY = 'natura:recent-searches';
+interface SearchItem {
+  name: string;
+  detail: string;
+  icon: () => string;
+  lngLat: [number, number];
+  bbox?: [number, number, number, number] | null;
+  cat?: Cat;
+  osm?: string;
+  zoom: number;
+  source: 'local' | 'web';
+}
+const CAT_ICON = (c: Cat): (() => string) =>
+  ['peak', 'saddle', 'ridge', 'viewpoint'].includes(c) ? icons.peak
+  : ['lake', 'river', 'waterfall', 'spring', 'gorge'].includes(c) ? icons.water
+  : ['hut', 'camp', 'lodging'].includes(c) ? icons.hut
+  : ['city', 'town', 'village', 'district', 'street'].includes(c) ? icons.town
+  : c === 'trail' || c === 'path' ? icons.route
+  : icons.pin;
+const CAT_ZOOM: Partial<Record<Cat, number>> = { city: 12, town: 13, village: 14, district: 14.5, street: 16.5, peak: 14.5, lake: 15, trail: 13 };
+const CHIPS: Array<[string, Cat[]]> = [
+  ['Lakes', ['lake']], ['Peaks', ['peak']], ['Huts', ['hut']], ['Waterfalls', ['waterfall']], ['Caves', ['cave', 'gorge']],
+  ['Viewpoints', ['viewpoint']], ['Trails', ['trail']], ['Springs', ['spring']], ['Food', ['food']],
+];
+
+function searchFocus(): { focus: [number, number]; user: boolean } {
+  const fix = location.last && Date.now() - location.last.time < 5 * 60_000 ? location.last : null;
+  if (fix) return { focus: [fix.lng, fix.lat], user: true };
+  const c = engine.map.getCenter();
+  return { focus: [c.lng, c.lat], user: false };
+}
+
+const kmText = (km: number) => (km < 1 ? `${Math.round(km * 1000)} m` : km < 10 ? `${km.toFixed(1)} km` : `${Math.round(km)} km`);
+
+function fromLocal(r: SearchResult): SearchItem {
+  const where = [r.locality, r.locality.includes(r.county) ? '' : r.county].filter(Boolean).join(', ');
+  return {
+    name: r.name, detail: [CAT_LABEL[r.cat], where, kmText(r.km)].filter(Boolean).join(' · '), icon: CAT_ICON(r.cat),
+    lngLat: [r.lng, r.lat], bbox: r.bbox, cat: r.cat, osm: r.osm, zoom: CAT_ZOOM[r.cat] ?? 15.5, source: 'local',
+  };
+}
+
+function recent(): SearchItem[] {
+  try {
+    return (JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]') as SearchItem[]).map((r) => ({ ...r, icon: r.cat ? CAT_ICON(r.cat) : icons.pin }));
+  } catch {
+    return [];
+  }
+}
+function remember(it: SearchItem) {
+  try {
+    const list = [it, ...recent().filter((r) => r.name !== it.name)].slice(0, 6).map(({ icon: _i, ...rest }) => rest);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
+let shown: SearchItem[] = [];
+function renderItems(items: SearchItem[], header = '', empty = '') {
+  shown = items;
+  results.hidden = false;
+  results.innerHTML =
+    header +
+    (items.length
+      ? items
+          .map(
+            (p, i) => `<li class="res" style="--i:${i}"><button class="res-main" data-i="${i}"><span class="ico">${p.icon()}</span>
+              <span class="res-text"><div class="name">${esc(p.name)}</div><div class="detail">${esc(p.detail)}${p.source === 'web' ? ' <em>· web</em>' : ''}</div></span></button>
+              <button class="res-go" data-go="${i}" aria-label="Directions to ${esc(p.name)}">${icons.route(18)}</button></li>`,
+          )
+          .join('')
+      : empty ? `<li class="empty">${empty}</li>` : '');
+  results.querySelectorAll<HTMLButtonElement>('[data-i]').forEach((b) => b.addEventListener('click', () => void selectItem(shown[Number(b.dataset.i)])));
+  results.querySelectorAll<HTMLButtonElement>('[data-go]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const it = shown[Number(b.dataset.go)];
+      remember(it);
+      closeResults();
+      searchInput.blur();
+      void routeTo(it.lngLat);
+    }),
+  );
+  results.querySelectorAll<HTMLButtonElement>('[data-chip]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const [label, cats] = CHIPS[Number(b.dataset.chip)];
+      const { focus } = searchFocus();
+      const r = await browse(cats, focus).catch(() => null);
+      renderItems((r?.results ?? []).map(fromLocal), chipsHtml(Number(b.dataset.chip)), r ? `No ${label.toLowerCase()} nearby` : 'Search data is still loading…');
+    }),
+  );
+}
+
+const chipsHtml = (active = -1) =>
+  `<li class="chips">${CHIPS.map(([l], i) => `<button class="chip ${i === active ? 'on' : ''}" data-chip="${i}">${l}</button>`).join('')}</li>`;
+
+function showSuggestions() {
+  const rec = recent();
+  renderItems(rec, chipsHtml() + (rec.length ? '<li class="res-h">Recent</li>' : ''));
+}
+
+async function selectItem(p: SearchItem) {
+  remember(p);
+  searchInput.value = p.name;
+  clearBtn.hidden = false;
+  searchInput.blur();
+  closeResults();
+  searchMarker?.remove();
+  searchMarker = new maplibregl.Marker({ color: '#ff8a1f' }).setLngLat(p.lngLat).addTo(engine.map);
+  const sheetPad = { top: 90, bottom: window.innerHeight * 0.42, left: 40, right: 40 };
+  if (p.bbox && p.bbox[2] - p.bbox[0] > 0.002 && p.cat !== 'river') engine.map.fitBounds(p.bbox, { padding: sheetPad, maxZoom: p.zoom, duration: 900 });
+  else engine.map.flyTo({ center: p.lngLat, zoom: p.zoom, essential: true, padding: sheetPad, duration: 1100 });
+  openSheet(
+    'info',
+    `<div class="place-head"><span class="place-ico">${p.icon()}</span><div><h2>${esc(p.name)}</h2><div class="sub">${esc(p.detail)}</div></div></div>
+     <div class="btns"><button class="btn primary" id="pl-go">${icons.route(18)} Directions</button>${p.cat === 'trail' && p.osm?.startsWith('r') ? '<button class="btn" id="pl-trail">Show trail</button>' : ''}</div>`,
+  );
+  q('#pl-go')!.addEventListener('click', () => routeTo(p.lngLat));
+  const showTrail = async () => {
+    const segs = await routeGeometry(p.osm!, p.lngLat[0], p.lngLat[1]).catch(() => null);
+    if (!segs) return toast('Trail outline not available offline yet', { kind: 'warn' });
+    engine.setLine('imported', segs);
+    const b = new maplibregl.LngLatBounds(segs[0][0], segs[0][0]);
+    segs.flat().forEach((c) => b.extend(c));
+    engine.map.fitBounds(b, { padding: sheetPad, duration: 800 });
+  };
+  q('#pl-trail')?.addEventListener('click', () => void showTrail());
+  if (p.cat === 'trail' && p.osm?.startsWith('r')) void showTrail();
+}
+
+async function runSearch(qv: string, signal: AbortSignal) {
+  const { focus, user } = searchFocus();
+  const local = await searchOffline(qv, focus, user).catch(() => null);
+  if (signal.aborted) return;
+  let items = local ? local.results.slice(0, 10).map(fromLocal) : [];
+  if (local) renderItems(items, '', '');
+  // The web (Photon) adds addresses and businesses when we're not sure or found little.
+  const weak = !local || items.length < 3 || (local.confidence ?? 0) < 0.4;
+  if (navigator.onLine && weak && !local?.cue?.length) {
+    const web = await searchPlaces(qv, signal, focus).catch(() => [] as Place[]);
+    if (signal.aborted) return;
+    for (const w of web) {
+      const dup = items.some((it) => it.name.toLowerCase() === w.name.toLowerCase() && Math.abs(it.lngLat[0] - w.lngLat[0]) + Math.abs(it.lngLat[1] - w.lngLat[1]) < 0.02);
+      if (!dup) items.push({ name: w.name, detail: w.detail, icon: KIND_ICON[w.kind], lngLat: w.lngLat, zoom: w.zoom, source: 'web' });
+    }
+  } else if (!local) {
+    items = searchLocal(qv, localPlaces(), focus).map((p) => ({ name: p.name, detail: p.detail, icon: KIND_ICON[p.kind], lngLat: p.lngLat, zoom: p.zoom, source: 'local' as const }));
+  }
+  if (signal.aborted) return;
+  const header = local?.anchor ? `<li class="res-h">Near ${esc(local.anchor)}</li>` : local?.nearMe ? '<li class="res-h">Near you</li>' : '';
+  renderItems(items.slice(0, 12), header, navigator.onLine ? 'No places found in Romania' : 'No signal — nothing matching on this device');
+}
+
+searchInput.addEventListener('focus', () => {
+  void warmUp().catch(() => undefined);
+  if (!searchInput.value.trim()) showSuggestions();
+});
 searchInput.addEventListener('input', () => {
-  const qv = searchInput.value.trim();
-  clearBtn.hidden = !qv;
+  const qv = searchInput.value;
+  clearBtn.hidden = !qv.trim();
   clearTimeout(searchTimer);
-  if (qv.length < 2) return closeResults();
-  searchTimer = window.setTimeout(async () => {
+  if (qv.trim().length < 2) return qv.trim() ? closeResults() : showSuggestions();
+  searchTimer = window.setTimeout(() => {
     searchAbort?.abort();
     const ac = (searchAbort = new AbortController());
-    try {
-      const c = engine.map.getCenter();
-      const near: [number, number] = [c.lng, c.lat];
-      const local = () => searchLocal(qv, localPlaces(), near);
-      let places: Place[];
-      let offline = false;
-      try {
-        places = navigator.onLine ? await searchPlaces(qv, ac.signal, near) : local();
-        offline = !navigator.onLine;
-        if (!places.length) places = local();
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') throw err;
-        places = local();
-        offline = true;
-      }
-      if (ac.signal.aborted) return;
-      results.hidden = false;
-      results.innerHTML = places.length
-        ? places
-            .map(
-              (p, i) => `<li><button data-i="${i}"><span class="ico">${KIND_ICON[p.kind]()}</span>
-                <span><div class="name">${esc(p.name)}</div><div class="detail">${esc(p.detail)}</div></span></button></li>`,
-            )
-            .join('')
-        : `<li class="empty">${offline ? 'No signal — nothing matching on this device' : 'No places found in Romania'}</li>`;
-      results.querySelectorAll<HTMLButtonElement>('button[data-i]').forEach((b) =>
-        b.addEventListener('click', () => {
-          const p = places[Number(b.dataset.i)];
-          searchInput.value = p.name;
-          searchInput.blur();
-          closeResults();
-          searchMarker?.remove();
-          searchMarker = new maplibregl.Marker({ color: '#ff8a1f' }).setLngLat(p.lngLat).addTo(engine.map);
-          engine.map.flyTo({ center: p.lngLat, zoom: p.zoom, essential: true });
-        }),
-      );
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
-        results.hidden = false;
-        results.innerHTML = `<li class="empty">Search unavailable — check your connection</li>`;
-      }
-    }
-  }, 250);
+    runSearch(qv, ac.signal).catch((e) => {
+      if ((e as Error).name !== 'AbortError') renderItems([], '', 'Search unavailable right now');
+    });
+  }, 120);
 });
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && shown[0]) void selectItem(shown[0]);
+  if (e.key === 'Escape') {
+    closeResults();
+    searchInput.blur();
+  }
+});
+
 clearBtn.addEventListener('click', () => {
   searchInput.value = '';
   clearBtn.hidden = true;
@@ -706,8 +834,11 @@ function renderRouteSheet(route: Route | null) {
         : '';
     openSheet(
       'route',
-      `<h2>${fmtTime(route.duration)} · ${fmtKm(route.distance)}</h2>
-       <div class="sub">${route.mode === 'foot' ? 'Hike' : route.mode === 'bike' ? 'Ride' : 'Moto ride'} · ${pct(route.offroadShare)} off-road${route.hiddenShare ? ` · ${pct(route.hiddenShare)} hidden trails` : ''}</div>
+      `<div class="route-head">
+         <div class="rh-text"><h2>${fmtTime(route.duration)} <span class="rh-dist">(${fmtKm(route.distance)})</span></h2>
+         <div class="sub">${route.mode === 'foot' ? 'Hike' : route.mode === 'bike' ? 'Ride' : 'Moto ride'} · ${pct(route.offroadShare)} off-road${route.hiddenShare ? ` · ${pct(route.hiddenShare)} hidden trails` : ''}</div></div>
+         <button class="btn primary start-btn" id="nav-start">${icons.compass(18)} Start</button>
+       </div>
        ${modeSeg()}
        <div class="stats">
          <div class="stat"><b>${fmtKm(route.distance)}</b><small>distance</small></div>
@@ -717,8 +848,8 @@ function renderRouteSheet(route: Route | null) {
        </div>
        <div id="profile"></div>
        ${warn}
-       <div class="btns"><button class="btn primary" id="nav-start">${icons.compass(18)} Start</button><button class="btn" id="route-gpx">Save GPX</button></div>
-       ${options}`,
+       ${options}
+       <div class="btns"><button class="btn" id="route-gpx">Save as GPX</button></div>`,
     );
     const pd = profileData(route.coords, route.elevations);
     const host = q('#profile');
