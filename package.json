@@ -1,0 +1,23 @@
+{
+  "name": "claude-code",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avramrares22-create/Claude-Code.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/avramrares22-create/Claude-Code/issues"
+  },
+  "homepage": "https://github.com/avramrares22-create/Claude-Code#readme",
+  "dependencies": {
+    "maplibre-gl": "^6.12.0"
+  }
+}
