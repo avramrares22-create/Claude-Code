@@ -5,7 +5,7 @@
  * reported time — e.g. to seek hidden trails or stay off asphalt.
  */
 import { haversine } from '../geo/geodesy';
-import { CAR_ROADS, HIDDEN_THRESHOLD } from '../trails/classify';
+import { CAR_ROADS, HIDDEN_THRESHOLD, carTraffic } from '../trails/classify';
 import type { Trail, TravelMode } from '../trails/types';
 import type { TrailGraph } from './graph';
 import { expertModel, type RouteModel } from './routeModel';
@@ -26,6 +26,10 @@ export interface RoutePreferences {
   strictAccess: boolean;
   /** Bike: ride sidewalks, cycleways, paths and tracks; use roads with cars only when there's no other way. */
   avoidCarRoads?: boolean;
+  /** 0 … 1: how strongly to steer around dense bear habitat. */
+  avoidBears?: number;
+  /** Bear density (bears/km²) at a point; set by the engine when the bear map is available. */
+  bearDensity?: (lng: number, lat: number) => number;
 }
 
 export const DEFAULT_PREFS: RoutePreferences = {
@@ -36,9 +40,12 @@ export const DEFAULT_PREFS: RoutePreferences = {
   maxMtbScale: 3,
   strictAccess: false,
   avoidCarRoads: true,
+  avoidBears: 0.5,
 };
 
 export interface Route {
+  /** Bear exposure along the way on the bear meter's 1–100 scale (set by the engine). */
+  bearIndex?: number;
   mode: TravelMode;
   coords: Array<[number, number]>;
   elevations: number[];
@@ -121,11 +128,26 @@ function preferenceMultiplier(t: Trail, prefs: RoutePreferences): number {
   // Detected trails are less certain to exist: a small, confidence-weighted surcharge.
   if (t.kind === 'detected') m *= 1 + 0.3 * (1 - t.confidence);
   if (t.access[prefs.mode] === 'unknown' && !(prefs.mode === 'bike' && prefs.avoidCarRoads && !CAR_ROADS.has(t.tags.highway))) m *= 1.1;
-  if (prefs.mode === 'bike' && prefs.avoidCarRoads !== false) {
-    if (CAR_ROADS.has(t.tags.highway)) m *= 4;
-    else if (t.tags.highway === 'living_street' || t.tags.highway === 'service') m *= 1.5;
-  }
+  if (prefs.mode === 'bike' && prefs.avoidCarRoads !== false) m *= 1 + 5 * carTraffic(t.tags);
+  if (prefs.avoidBears && prefs.bearDensity) m *= 1 + prefs.avoidBears * bearPenalty(t, prefs.bearDensity);
   return m;
+}
+
+const bearCache = new WeakMap<Trail, number>();
+/**
+ * 0 … ~1.2 extra cost from bear density along a way (sampled at its middle and
+ * quarter points): ~0 in town, ~0.4 in average Carpathian forest, ~1 in hotspots.
+ */
+function bearPenalty(t: Trail, at: (lng: number, lat: number) => number): number {
+  let v = bearCache.get(t);
+  if (v === undefined) {
+    const c = t.coords;
+    const pts = [c[Math.floor(c.length / 4)], c[Math.floor(c.length / 2)], c[Math.floor((3 * c.length) / 4)]];
+    const d = pts.reduce((a, p) => a + at(p[0], p[1]), 0) / pts.length;
+    v = Math.min(1.2, Math.max(0, Math.log10(Math.max(d, 0.003) / 0.003) / 2));
+    bearCache.set(t, v);
+  }
+  return v;
 }
 
 class MinHeap {

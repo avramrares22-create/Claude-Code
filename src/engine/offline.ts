@@ -12,7 +12,7 @@ import { REFERENCE, ROMANIA_BBOX, TERRAIN, type BBox, type HiresProvider } from 
 import { tilesInBBox, tileBBox } from './geo/mercator';
 import { bboxTouchesRomania } from './geo/romania';
 import type { ImageryHandle } from './imagery/imageryProtocol';
-import { dataUrl } from './util/base';
+import { BASE_URL, dataUrl } from './util/base';
 import { fetchJson, fetchSafe } from './util/net';
 import { kvGet, kvSet } from './util/kvStore';
 
@@ -211,6 +211,10 @@ export async function downloadPack(plan: OfflinePlan, deps: DownloadDeps, progre
   for (let x = Math.floor(w); x <= Math.floor(e); x++)
     for (let y = Math.floor(s_); y <= Math.floor(n); y++)
       for (const kind of ['streets', 'routes']) await store(cache, dataUrl(`search/${kind}/${x}_${y}.json`), signal).catch(() => undefined);
+  // Bear risk: the ~200 m layer for the pack's area.
+  for (let x = Math.floor(w); x <= Math.floor(e); x++)
+    for (let y = Math.floor(s_); y <= Math.floor(n); y++) await store(cache, `${BASE_URL}bears/fine/${x}_${y}.bin`, signal).catch(() => undefined);
+  await store(cache, `${BASE_URL}bears/fine.json`, signal).catch(() => undefined);
   const tj = await fetchJson<{ tiles: string[] }>(REFERENCE.tilejson, { signal }).catch(() => null);
   await store(cache, REFERENCE.tilejson, signal).catch(() => failed++);
   tick('Preparing')();

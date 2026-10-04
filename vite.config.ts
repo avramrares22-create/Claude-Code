@@ -24,7 +24,7 @@ function precacheShell(): Plugin {
           const rel = relative(outDir, full).split('\\').join('/');
           if (statSync(full).isDirectory()) {
             // Data comes from offline packs; models and the ONNX runtime only matter online (scanning needs imagery).
-            if (!['data', 'models', 'ort'].includes(rel)) walk(full);
+            if (!['data', 'models', 'ort', 'bears/fine'].includes(rel)) walk(full);
           } else if (!/\.(wasm|map)$/.test(f) && rel !== 'sw.js') files.push(rel);
         }
       };

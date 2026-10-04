@@ -27,6 +27,7 @@
         <input id="search" type="search" placeholder="Search peaks, huts, villages…" autocomplete="off" enterkeyhint="search" aria-label="Search places" />
         <button id="search-clear" class="icon-btn" hidden aria-label="Clear search"></button>
       </div>
+      <div id="quick-chips" class="quick-chips" role="toolbar" aria-label="Find nearby"></div>
       <ul id="search-results" class="results glass" hidden></ul>
       <div id="progress" class="progress" aria-hidden="true"><span></span></div>
       <div id="badges"></div>
@@ -36,8 +37,9 @@
 
     <!-- Right-side floating controls -->
     <div class="fabs">
+      <button id="fab-3d" class="fab fab-sm glass" aria-label="3D terrain"></button>
       <button id="fab-locate" class="fab glass" aria-label="My location"></button>
-      <button id="fab-3d" class="fab glass" aria-label="3D terrain"></button>
+      <button id="fab-go" class="fab fab-go" aria-label="Directions"></button>
     </div>
 
     <!-- Navigation HUD (shown while following a route) -->
