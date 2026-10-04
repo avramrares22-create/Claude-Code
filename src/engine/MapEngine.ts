@@ -2,6 +2,7 @@
  * MapEngine: the app-facing core. Owns the MapLibre map and wires together
  * the Sentinel-2 imagery engine, terrain, trail intelligence and the router.
  */
+import { MARK_COLORS } from './trails/classify';
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, LngLatLike, Map as MLMap } from 'maplibre-gl';
 import type * as GeoJSON from 'geojson';
@@ -169,8 +170,58 @@ export class MapEngine {
 
   // ---------------------------------------------------------------- layers
 
+  /** Painted-blaze icons for every marking colour × shape (white plate, coloured symbol), drawn at 2×. */
+  private addMarkingIcons() {
+    const px = 2;
+    const S = 22 * px;
+    for (const color of Object.values(MARK_COLORS)) {
+      for (const shape of ['stripe', 'cross', 'dot', 'triangle', 'other'] as const) {
+        const id = `mark-${color.replace('#', '').toLowerCase()}-${shape}`;
+        if (this.map.hasImage(id)) continue;
+        const c = new OffscreenCanvas(S, S);
+        const g = c.getContext('2d')!;
+        const r = 5 * px;
+        g.beginPath();
+        g.roundRect(1.5 * px, 1.5 * px, S - 3 * px, S - 3 * px, r);
+        g.fillStyle = '#ffffff';
+        g.fill();
+        g.lineWidth = 1.5 * px;
+        g.strokeStyle = 'rgba(0,0,0,0.55)';
+        g.stroke();
+        g.fillStyle = color;
+        const m = S / 2;
+        if (shape === 'stripe') g.fillRect(3 * px, m - 3.4 * px, S - 6 * px, 6.8 * px);
+        else if (shape === 'cross') {
+          g.fillRect(m - 2.4 * px, 4.5 * px, 4.8 * px, S - 9 * px);
+          g.fillRect(4.5 * px, m - 2.4 * px, S - 9 * px, 4.8 * px);
+        } else if (shape === 'dot') {
+          g.beginPath();
+          g.arc(m, m, 5.6 * px, 0, Math.PI * 2);
+          g.fill();
+        } else if (shape === 'triangle') {
+          g.beginPath();
+          g.moveTo(m, 4.5 * px);
+          g.lineTo(S - 4.5 * px, S - 5.5 * px);
+          g.lineTo(4.5 * px, S - 5.5 * px);
+          g.closePath();
+          g.fill();
+        } else {
+          g.beginPath();
+          g.moveTo(m, 4 * px);
+          g.lineTo(S - 4 * px, m);
+          g.lineTo(m, S - 4 * px);
+          g.lineTo(4 * px, m);
+          g.closePath();
+          g.fill();
+        }
+        this.map.addImage(id, g.getImageData(0, 0, S, S), { pixelRatio: px });
+      }
+    }
+  }
+
   private addEngineLayers() {
     const m = this.map;
+    this.addMarkingIcons();
     m.addSource('trails', { type: 'geojson', data: EMPTY, promoteId: 'wayId' });
     m.addSource('pois', { type: 'geojson', data: EMPTY });
     m.addSource('route', { type: 'geojson', data: EMPTY });
@@ -193,6 +244,15 @@ export class MapEngine {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: { 'line-color': 'rgba(0,0,0,0.55)', 'line-width': width(2.6) },
     });
+    // Marked trails look like their paint: a white band with the marking colour in the middle.
+    m.addLayer({
+      id: 'trails-marked-band',
+      type: 'line',
+      source: 'trails',
+      filter: ['==', ['get', 'kind'], 'marked'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ffffff', 'line-width': width(2.2), 'line-opacity': ['interpolate', ['linear'], ['zoom'], 11, 0.5, 14, 0.95] },
+    });
     m.addLayer({
       id: 'trails-line',
       type: 'line',
@@ -201,7 +261,7 @@ export class MapEngine {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': ['get', 'color'],
-        'line-width': width(1.3, 2),
+        'line-width': width(1.3, 1.25),
         // Roads are context, trails are the point: keep roads quiet.
         'line-opacity': ['match', ['get', 'kind'], 'road', 0.55, 1],
       },
@@ -248,6 +308,26 @@ export class MapEngine {
       },
       paint: { 'text-color': '#fff', 'text-halo-color': 'rgba(0,0,0,0.8)', 'text-halo-width': 1.2 },
     });
+    // The painted blazes themselves, repeated along marked trails (both, where two routes share a path).
+    const markLayer = (id: string, prop: string, offset: number): maplibregl.LayerSpecification => ({
+      id,
+      type: 'symbol',
+      source: 'trails',
+      minzoom: 13,
+      filter: ['!=', ['get', prop], ''],
+      layout: {
+        'symbol-placement': 'line',
+        'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 13, 180, 17, 260] as unknown as number,
+        'icon-image': ['get', prop],
+        'icon-size': ['interpolate', ['linear'], ['zoom'], 13, 0.7, 16, 1, 18, 1.15],
+        'icon-rotation-alignment': 'viewport',
+        'icon-offset': [offset, 0],
+        'icon-padding': 1,
+        'icon-allow-overlap': false,
+      },
+    });
+    m.addLayer(markLayer('trails-mark1', 'mark1', 0));
+    m.addLayer(markLayer('trails-mark2', 'mark2', 24));
     m.addLayer({
       id: 'imported-line',
       type: 'line',

@@ -44,6 +44,11 @@ export const defaultLoader: Loader = async (bbox, signal, cell) => {
 const CELL_TTL = 7 * 86_400_000;
 const MAX_CELLS_PER_VIEW = 16;
 
+/** Icon id of a trail marking ("mark-d7263d-stripe"), or "" when unmarked. */
+export function markId(m: { color: string; shape: string } | undefined): string {
+  return m ? `mark-${m.color.replace('#', '').toLowerCase()}-${m.shape}` : '';
+}
+
 export const KIND_COLORS: Record<TrailKind, string> = {
   marked: '#d7263d',
   path: '#f3e6c4',
@@ -195,6 +200,9 @@ export class TrailStore {
           difficulty: t.difficulty,
           color: t.routes[0]?.marking?.color ?? KIND_COLORS[t.kind],
           shape: t.routes[0]?.marking?.shape ?? '',
+          // Up to two painted markings for the map symbols (shared sections carry both).
+          mark1: markId(t.routes.find((r) => r.marking)?.marking),
+          mark2: markId(t.routes.filter((r) => r.marking)[1]?.marking),
           routes: t.routes.map((r) => r.name).filter(Boolean).join(' · '),
           surface: t.surfaceClass,
           grade: t.trackGrade,
