@@ -77,11 +77,11 @@ scripts/data/            CI data builders (trail cells, mosaic pre-render)
 
 ## The models
 
-**TrailNet** (`public/models/trailnet.onnx`) is a U-Net. Its input is Sentinel-2 bands B02, B03, B04 and B08 at 10 m. Version 3 was trained on 242 Romanian image tiles with OpenStreetMap labels:
+**TrailNet** (`public/models/trailnet.onnx`) is a U-Net. Its input is Sentinel-2 bands B02, B03, B04 and B08 at 10 m. Version 4 was trained on 526 Romanian image tiles (with a dense grid around Brașov) with OpenStreetMap labels:
 
 - Regions where OSM is too sparse to trust its "no trail" pixels were excluded from training.
-- Held-out regions: precision 0.60 and recall 0.30 (F1 0.40) at the app's threshold of 0.3 (±2 px tolerance).
-- Known weakness: about 14% of mapped stream pixels are mistaken for trails. An experiment adding a waterway head (`TRAILNET_HEADS=2`) did not reduce this, because Carpathian forest roads often follow streams, so it isn't shipped.
+- Held-out regions: precision 0.61 and recall 0.32 (F1 0.42) at the app's threshold of 0.3 (±2 px tolerance). v3 scored 0.60 / 0.30 / 0.40 on the same regions.
+- Known weakness: about 13% of mapped stream pixels are mistaken for trails. An experiment adding a waterway head (`TRAILNET_HEADS=2`) did not reduce this, because Carpathian forest roads often follow streams, so it isn't shipped.
 - Besides finding new trails, its output is used to shift mapped OSM ways sideways onto the path visible in the imagery. Ends and junctions stay anchored, so routing is unaffected.
 
 Scores on held-out regions are measured against OSM, so they understate real precision: every true but unmapped trail it finds counts as an error. The current scores are in `ml/trailnet-report.json`. Retrain with:

@@ -1,6 +1,6 @@
 {
  "name": "TrailNet",
- "version": 3,
+ "version": 4,
  "input": "Sentinel-2 C1 L2A B02,B03,B04,B08 @10m, reflectance clip[0,0.5]/0.25-1",
  "threshold": 0.3,
  "validation": {
@@ -11,18 +11,18 @@
    "retezat",
    "tarnave"
   ],
+  "precision": 0.609,
+  "recall": 0.316,
+  "f1": 0.416,
+  "streamConfusion": 0.132,
+  "note": "vs OpenStreetMap with \u00b12 px tolerance; OSM is incomplete so precision is understated"
+ },
+ "trainSamples": 526,
+ "previous": {
+  "version": 3,
   "precision": 0.601,
   "recall": 0.299,
   "f1": 0.399,
-  "streamConfusion": 0.138,
-  "note": "vs OpenStreetMap with \u00b12 px tolerance; OSM is incomplete so precision is understated"
- },
- "trainSamples": 242,
- "previous": {
-  "version": 1,
-  "precision": 0.521,
-  "recall": 0.322,
-  "f1": 0.398,
-  "streamConfusion": 0.163
+  "streamConfusion": 0.138
  }
 }
