@@ -1,0 +1,48 @@
+{
+ "version": 1,
+ "west": 20.2,
+ "north": 48.3,
+ "res": 0.01,
+ "width": 960,
+ "height": 470,
+ "encoding": {
+  "zero": 0,
+  "log10Min": -4.0,
+  "log10Max": 1.0,
+  "steps": 254
+ },
+ "unit": "bears per km²",
+ "censusTotal": 10815,
+ "validation": {
+  "sdmSpatialCvAuc": {
+   "gbm": {
+    "mean": 0.822,
+    "std": 0.023
+   },
+   "logistic": {
+    "mean": 0.815,
+    "std": 0.05
+   }
+  },
+  "independentInatAuc": 0.928,
+  "trainingSightings": 268
+ },
+ "spotChecks": {
+  "Brașov – Răcădău (city edge)": 0.3407,
+  "Bucegi – Jepii Mici trail (fatal attack 2024)": 0.3089,
+  "Transfăgărășan – Bâlea (frequent roadside bears)": 0.2998,
+  "Băile Tușnad": 0.2905,
+  "Predeal": 0.3675,
+  "Sibiu city centre": 0.0103,
+  "Cluj-Napoca centre": 0.0001,
+  "București": 0.0001,
+  "Constanța": 0.0
+ },
+ "sources": [
+  "Brown bear genetic census 2022–2025, Romanian Ministry of Environment / INCDS Marin Drăcea (county totals)",
+  "ESA WorldCover 2021 v200 (CC BY 4.0)",
+  "Mapzen Terrarium DEM (AWS Open Data)",
+  "GBIF.org occurrence records of Ursus arctos in Romania (observation.org and others)",
+  "geoBoundaries ROU ADM1 (CC BY 4.0)"
+ ]
+}

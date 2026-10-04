@@ -25,6 +25,15 @@ import {
   type TrailProps,
   type TravelMode,
 } from './engine';
+import {
+  assessBearRisk,
+  BEAR_SAFETY_TIPS,
+  fetchSightings,
+  loadBearGrid,
+  RISK_LABEL,
+  type BearRisk,
+  type Sighting,
+} from './engine/bears/bearRisk';
 import { haversine } from './engine/geo/geodesy';
 import { kvGet, kvSet } from './engine/util/kvStore';
 import { icons } from './ui/icons';
@@ -815,6 +824,125 @@ function speak(text: string) {
 const fmtClock = (secondsFromNow: number) => new Date(Date.now() + secondsFromNow * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const fmtDist = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.max(10, Math.round(m / 10) * 10)} m`);
 
+// ------------------------------------------------------------------ bear risk (corner widget while navigating)
+
+const bearBox = document.createElement('div');
+bearBox.className = 'bear-risk glass';
+bearBox.hidden = true;
+bearBox.setAttribute('role', 'button');
+bearBox.setAttribute('aria-label', 'Bear risk details');
+document.body.append(bearBox);
+
+const bear = {
+  risk: null as BearRisk | null,
+  sightings: null as Sighting[] | null,
+  fetchedAt: 0,
+  fetchedFrom: null as [number, number] | null,
+  computedAt: 0,
+  computedFrom: null as [number, number] | null,
+  expanded: false,
+  lastWarn: 0,
+  lastLevel: '' as string,
+  fetching: false,
+  triedAt: 0,
+};
+bearBox.addEventListener('click', () => {
+  bear.expanded = !bear.expanded;
+  renderBear();
+});
+
+const LIGHT_TEXT: Record<BearRisk['light'], string> = { day: 'daylight', twilight: 'dawn/dusk — peak bear activity', night: 'night — bears move more' };
+
+function seasonText(f: number) {
+  return f >= 1.2 ? 'autumn feeding season (most conflicts)' : f >= 0.9 ? 'active season' : f >= 0.5 ? 'bears waking / preparing dens' : 'denning season (some bears still active)';
+}
+
+function renderBear() {
+  const r = bear.risk;
+  if (!r) {
+    bearBox.innerHTML = `<div class="br-head">🐻 Bear risk</div><div class="br-wait">Estimating…</div>`;
+    return;
+  }
+  const cell = (label: string, x: BearRisk['r10']) =>
+    `<div class="br-row"><small>${label}</small><b class="lvl-${x.level}">${x.index}</b><span class="lvl-${x.level}">${RISK_LABEL[x.level]}</span></div>`;
+  const recent10 = r.r10.recent;
+  const live = !r.liveData
+    ? 'Live sightings unavailable (no signal) — using the census map only.'
+    : recent10 >= 0.5
+      ? `About ${Math.max(1, Math.round(recent10))} recent bear sighting${recent10 >= 1.5 ? 's' : ''} reported within 10 km (last 30 days).`
+      : 'No bear sightings reported within 10 km in the last 30 days (most sightings are never reported).';
+  bearBox.classList.toggle('expanded', bear.expanded);
+  bearBox.innerHTML = `<div class="br-head">🐻 Bear risk</div>${cell('10 km', r.r10)}${cell('1 km', r.r1)}
+    ${
+      bear.expanded
+        ? `<div class="br-more">
+        <p>≈ <b>${Math.round(r.r10.bears)}</b> bears live within 10 km (2025 genetic census, spread over habitat).</p>
+        <p>${esc(live)}</p>
+        <p>Now: ${seasonText(r.season)} · ${LIGHT_TEXT[r.light]}${r.modeFactor > 1 ? ' · riding fast and quiet surprises bears more' : r.modeFactor < 1 ? ' · engine noise warns bears off' : ''}.</p>
+        <ul>${BEAR_SAFETY_TIPS.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
+        <p class="br-note">A 1–100 estimate of how likely you are to meet a bear, from public data. It can't see individual bears, and a low number never means "no bears". Tap to close.</p>
+      </div>`
+        : ''
+    }`;
+}
+
+/** Downloads recent sightings; resolves true when a new list arrived. Retries at most every 2 minutes. */
+async function refreshSightings(f: Fix): Promise<boolean> {
+  if (bear.fetching || !navigator.onLine || Date.now() - bear.triedAt < 2 * 60_000) return false;
+  bear.fetching = true;
+  bear.triedAt = Date.now();
+  try {
+    bear.sightings = await fetchSightings(f.lng, f.lat);
+    bear.fetchedAt = Date.now();
+    bear.fetchedFrom = [f.lng, f.lat];
+    bear.computedAt = 0; // recompute with the new data
+    return true;
+  } catch {
+    return false; // keep any older list; the census map still works
+  } finally {
+    bear.fetching = false;
+  }
+}
+
+async function updateBearRisk(f: Fix, mode: string) {
+  const here: [number, number] = [f.lng, f.lat];
+  const stale = Date.now() - bear.fetchedAt > 10 * 60_000 || !bear.fetchedFrom || haversine(...bear.fetchedFrom, ...here) > 8000;
+  if (stale)
+    void refreshSightings(f).then((fresh) => {
+      if (fresh) void updateBearRisk(f, mode);
+    });
+  // Recompute every 30 s or after moving 150 m.
+  if (bear.computedFrom && Date.now() - bear.computedAt < 30_000 && haversine(...bear.computedFrom, ...here) < 150) return;
+  let grid;
+  try {
+    grid = await loadBearGrid();
+  } catch {
+    return;
+  }
+  bear.risk = assessBearRisk(grid, { lng: f.lng, lat: f.lat, mode, sightings: bear.sightings ?? undefined });
+  bear.computedAt = Date.now();
+  bear.computedFrom = here;
+  renderBear();
+  // Spoken warning when the risk right around you becomes very high (at most every 10 minutes).
+  const lvl = bear.risk.r1.level;
+  if (lvl === 'very-high' && bear.lastLevel !== 'very-high' && Date.now() - bear.lastWarn > 10 * 60_000) {
+    bear.lastWarn = Date.now();
+    speak('Bear risk is very high around you. Make noise and stay alert.');
+  }
+  bear.lastLevel = lvl;
+}
+
+function showBearRisk(on: boolean) {
+  bearBox.hidden = !on;
+  if (on) {
+    bear.expanded = false;
+    bear.computedAt = 0;
+    bear.triedAt = 0;
+    bear.lastLevel = '';
+    renderBear();
+  }
+}
+
 function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'> & { segments?: Route['segments'] }) {
   stopNavigation(false);
   const { coords, elevations, duration } = route;
@@ -833,6 +961,7 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
   void wake.acquire();
   hud.hidden = false;
   navBar.hidden = false;
+  showBearRisk(true);
   hud.className = 'nav-hud glass';
   hud.innerHTML = `<div class="turn"><span class="turn-ico">${arrowSvg('depart')}</span><div><div class="turn-dist">Waiting for GPS…</div><div class="turn-text">${esc(maneuvers[0]?.text ?? '')}</div></div></div>`;
   speak(maneuvers[0] ? `${maneuvers[0].spoken}.` : 'Starting navigation');
@@ -843,6 +972,7 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
   navUnsub = location.subscribe((f) => {
     showUser(f);
     engine.scanFocus = [f.lng, f.lat];
+    void updateBearRisk(f, routing.prefs.mode);
     const s = follower.update(f.lng, f.lat, f.accuracy);
     // Segment index of the snapped position, for the grey "done" part.
     let seg = 0;
@@ -938,6 +1068,7 @@ function stopNavigation(clear: boolean) {
   hud.hidden = true;
   navBar.hidden = true;
   recenterBtn.hidden = true;
+  showBearRisk(false);
   document.body.classList.remove('navigating');
   engine.map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
   if (!recording) void wake.release();

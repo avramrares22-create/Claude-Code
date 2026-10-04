@@ -9,3 +9,5 @@ __pycache__/
 public/ort/
 ml/route_rows.json
 ml/out2/
+ml/bears/cache/
+ml/bears/counties.geojson
