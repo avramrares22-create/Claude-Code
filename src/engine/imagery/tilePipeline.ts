@@ -36,6 +36,8 @@ export interface TileResult {
   filled: number;
   /** Scenes that failed to load; such tiles should not be cached. */
   failures: number;
+  /** Messages of those failures (diagnostics). */
+  errors: string[];
 }
 
 const ctxBase = {
@@ -98,7 +100,28 @@ async function readMask(url: string, proj: Projected, targetRes: number, signal:
   }
 }
 
+const SCENE_ATTEMPTS = 3;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Reads one scene's window, retrying transient network failures with backoff. */
 async function fetchScene(
+  scene: TileJob['scenes'][number],
+  req: TileJob,
+  proj: Projected,
+  targetRes: number,
+  signal: AbortSignal,
+): Promise<RasterWindow | null> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetchSceneOnce(scene, req, proj, targetRes, signal);
+    } catch (err) {
+      if (signal.aborted || attempt >= SCENE_ATTEMPTS) throw err;
+      await sleep(300 * 2 ** attempt + Math.random() * 300);
+    }
+  }
+}
+
+async function fetchSceneOnce(
   scene: TileJob['scenes'][number],
   req: TileJob,
   proj: Projected,
@@ -152,6 +175,7 @@ export async function renderTileRGBA(req: TileJob, signal: AbortSignal): Promise
   let filled = 0;
   let failures = 0;
   let lastError: unknown;
+  const errors: string[] = [];
   for (let i = 0; i < req.scenes.length && filled < SIZE * SIZE; i++) {
     signal.throwIfAborted();
     const scene = req.scenes[i];
@@ -162,10 +186,11 @@ export async function renderTileRGBA(req: TileJob, signal: AbortSignal): Promise
       if (signal.aborted) throw err;
       failures++;
       lastError = err;
+      errors.push(`${scene.id}: ${(err as Error)?.message ?? err}`);
       continue;
     }
     if (win) filled += paintWindow(rgba, projFor(scene.epsg).pixels, win, ctx);
   }
   if (filled === 0 && failures > 0) throw lastError;
-  return { rgba, filled, failures };
+  return { rgba, filled, failures, errors };
 }

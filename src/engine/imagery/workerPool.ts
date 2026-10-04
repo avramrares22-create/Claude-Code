@@ -79,6 +79,11 @@ export class ImageryWorkerPool {
     });
   }
 
+  /** Tiles currently rendering across all workers. */
+  get busy(): number {
+    return this.slots.reduce((a, s) => a + s.busy, 0);
+  }
+
   /**
    * Neighbouring tiles read the same scenes, so route each 4×4 block of tiles to
    * one worker to reuse its open COGs and block cache — unless that worker is

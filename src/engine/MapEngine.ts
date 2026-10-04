@@ -24,6 +24,7 @@ import { TrailStore } from './trails/trailStore';
 import type { Access, Trail, TrailKind } from './trails/types';
 import { Discovery } from './detect/discovery';
 import { downloadArea, planOfflineArea, type OfflinePlan, type Progress } from './offline';
+import { latToTileY, lngToTileX, tilesInBBox } from './geo/mercator';
 import { mergeDetections } from './detect/merge';
 
 /** Properties of a trail feature on the map (see TrailStore.trailsGeoJSON). */
@@ -143,7 +144,11 @@ export class MapEngine {
         });
         this.bindInteractions();
         this.map.on('moveend', () => void this.loadTrailsForView());
-        this.map.on('idle', () => this.scheduleAutoAlign());
+        this.map.on('idle', () => {
+          this.scheduleAutoAlign();
+          this.lookAhead();
+        });
+        this.map.on('movestart', () => this.lookAheadAbort?.abort());
         this.startAutoScan();
         void this.loadTrailsForView();
         resolve();
@@ -528,6 +533,34 @@ export class MapEngine {
       type: 'FeatureCollection',
       features: lines.filter((l) => l.length > 1).map((l) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: l } })),
     });
+  }
+
+  private lookAheadAbort: AbortController | null = null;
+
+  /**
+   * While the map sits idle, quietly render the next zoom level of the view
+   * into the on-device cache so zooming in shows imagery instantly. Stops as
+   * soon as the user moves; never competes with visible tiles.
+   */
+  private lookAhead() {
+    const z = Math.floor(this.map.getZoom());
+    if (this.imageryMode !== 'truecolor' || z < 8 || z >= IMAGERY.maxZoom || !navigator.onLine) return;
+    this.lookAheadAbort?.abort();
+    const ac = (this.lookAheadAbort = new AbortController());
+    const b = this.map.getBounds();
+    const tiles = tilesInBBox([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], z + 1);
+    // Centre first: that is where the user most likely zooms.
+    const c = this.map.getCenter();
+    const cx = lngToTileX(c.lng, z + 1), cy = latToTileY(c.lat, z + 1);
+    tiles.sort((a, b2) => Math.hypot(a[1] + 0.5 - cx, a[2] + 0.5 - cy) - Math.hypot(b2[1] + 0.5 - cx, b2[2] + 0.5 - cy));
+    void (async () => {
+      for (const [tz, tx, ty] of tiles.slice(0, 24)) {
+        if (ac.signal.aborted) return;
+        // Yield to visible work: wait while the workers are busy.
+        while (this.imagery.busy > 0 && !ac.signal.aborted) await new Promise((r) => setTimeout(r, 250));
+        await this.imagery.prefetch(tz, tx, ty, 'truecolor', ac.signal).catch(() => {});
+      }
+    })();
   }
 
   private alignTimer: ReturnType<typeof setTimeout> | undefined;
