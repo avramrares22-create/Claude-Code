@@ -18,7 +18,8 @@ import { DEFAULT_PREFS, findRoute, type Route, type RoutePreferences } from './r
 import { buildBaseStyle, FONTS, hiresId } from './style';
 import { TerrariumElevation } from './terrain/elevation';
 import { TrailStore } from './trails/trailStore';
-import type { TrailKind } from './trails/types';
+import type { Trail, TrailKind } from './trails/types';
+import { Discovery } from './detect/discovery';
 
 export interface EngineEvents {
   'imagery:index': { grids: number };
@@ -45,6 +46,8 @@ export class MapEngine {
   readonly map: MLMap;
   readonly trails = new TrailStore();
   readonly elevation = new TerrariumElevation();
+  readonly discovery = new Discovery();
+  private gpsAreas = new Map<string, Trail[]>();
   readonly ready: Promise<void>;
   readonly imageryStats = imageryStats;
   private sceneIndex: Promise<SceneIndex>;
@@ -141,7 +144,7 @@ export class MapEngine {
       id: 'trails-line',
       type: 'line',
       source: 'trails',
-      filter: ['!=', ['get', 'kind'], 'hidden'],
+      filter: ['!', ['in', ['get', 'kind'], ['literal', ['hidden', 'detected']]]],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': ['get', 'color'],
@@ -155,6 +158,27 @@ export class MapEngine {
       filter: ['==', ['get', 'kind'], 'hidden'],
       layout: { 'line-join': 'round' },
       paint: { 'line-color': ['get', 'color'], 'line-width': width(1.5), 'line-dasharray': [2, 1.5] },
+    });
+    // Trails found from GPS traces / imagery: glowing cyan, fainter when less certain.
+    m.addLayer({
+      id: 'trails-detected-glow',
+      type: 'line',
+      source: 'trails',
+      filter: ['==', ['get', 'kind'], 'detected'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#35e0ff', 'line-width': width(4), 'line-blur': 4, 'line-opacity': 0.35 },
+    });
+    m.addLayer({
+      id: 'trails-detected',
+      type: 'line',
+      source: 'trails',
+      filter: ['==', ['get', 'kind'], 'detected'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': '#35e0ff',
+        'line-width': width(1.6),
+        'line-opacity': ['interpolate', ['linear'], ['get', 'confidence'], 0, 0.45, 1, 1],
+      },
     });
     m.addLayer({
       id: 'trails-label',
@@ -227,7 +251,7 @@ export class MapEngine {
   private bindInteractions() {
     const m = this.map;
     m.on('click', (e) => {
-      const hit = m.queryRenderedFeatures(e.point, { layers: ['pois-circle', 'trails-line', 'trails-hidden'] })[0];
+      const hit = m.queryRenderedFeatures(e.point, { layers: ['pois-circle', 'trails-line', 'trails-hidden', 'trails-detected'] })[0];
       const lngLat: [number, number] = [e.lngLat.lng, e.lngLat.lat];
       if (hit?.layer.id === 'pois-circle') {
         const p = hit.properties as { id: number; kind: string; name: string; label: string };
@@ -239,7 +263,7 @@ export class MapEngine {
         this.emit('map:click', { lngLat });
       }
     });
-    for (const id of ['pois-circle', 'trails-line', 'trails-hidden']) {
+    for (const id of ['pois-circle', 'trails-line', 'trails-hidden', 'trails-detected']) {
       m.on('mouseenter', id, () => (m.getCanvas().style.cursor = 'pointer'));
       m.on('mouseleave', id, () => (m.getCanvas().style.cursor = ''));
     }
@@ -303,8 +327,10 @@ export class MapEngine {
     const f: maplibregl.FilterSpecification = ['in', ['get', 'kind'], ['literal', kinds]];
     this.map.setFilter('trails-casing', f);
     this.map.setFilter('trails-label', f);
-    this.map.setFilter('trails-line', ['all', f, ['!=', ['get', 'kind'], 'hidden']]);
+    this.map.setFilter('trails-line', ['all', f, ['!', ['in', ['get', 'kind'], ['literal', ['hidden', 'detected']]]]]);
     this.map.setFilter('trails-hidden', ['all', f, ['==', ['get', 'kind'], 'hidden']]);
+    this.map.setFilter('trails-detected', ['all', f, ['==', ['get', 'kind'], 'detected']]);
+    this.map.setFilter('trails-detected-glow', ['all', f, ['==', ['get', 'kind'], 'detected']]);
   }
 
   async planRoute(from: [number, number], to: [number, number], prefs: RoutePreferences = DEFAULT_PREFS): Promise<Route | null> {
@@ -335,6 +361,23 @@ export class MapEngine {
         ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: route.coords } }] }
         : EMPTY,
     );
+  }
+
+  /**
+   * Finds trails people use but nobody mapped, around the centre of the view,
+   * from public GPS traces. Results are cached on the device for 30 days.
+   */
+  async discoverHiddenTrails(signal?: AbortSignal): Promise<{ found: number; meters: number; cached: boolean }> {
+    if (this.map.getZoom() < 12) throw new Error('Zoom in closer to scan for hidden trails');
+    const b = this.map.getBounds();
+    const view: BBox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const box = Discovery.scanBox(view);
+    // OSM must be loaded first so only *unmapped* corridors come back.
+    await this.trails.ensure(box, signal);
+    const r = await this.discovery.scanGps(view, this.trails.osmWays(), signal);
+    this.gpsAreas.set(r.bbox.join(','), r.trails);
+    this.trails.setDetected('gps', [...this.gpsAreas.values()].flat());
+    return { found: r.trails.length, meters: Discovery.totalLength(r.trails), cached: r.cached };
   }
 
   flyTo(lngLat: [number, number], zoom = 14) {
