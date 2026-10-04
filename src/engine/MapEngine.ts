@@ -23,7 +23,7 @@ import { TerrariumElevation } from './terrain/elevation';
 import { TrailStore } from './trails/trailStore';
 import type { Access, Trail, TrailKind } from './trails/types';
 import { Discovery } from './detect/discovery';
-import { downloadArea, planOfflineArea, type OfflinePlan, type Progress } from './offline';
+import { downloadPack, planOfflineArea, planPack, PACKS, type OfflinePlan, type Progress } from './offline';
 import { latToTileY, lngToTileX, tilesInBBox } from './geo/mercator';
 import { mergeDetections } from './detect/merge';
 
@@ -603,7 +603,8 @@ export class MapEngine {
     const view: BBox = f ? [f[0] - span, f[1] - span, f[0] + span, f[1] + span] : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     const box = Discovery.scanBox(view);
     const key = box.join(',');
-    if (this.aligning || this.alignDone.has(key)) return;
+    // Scanning reads Sentinel-2 and GPS traces over the network: nothing to do without signal.
+    if (this.aligning || this.alignDone.has(key) || !navigator.onLine) return;
     this.aligning = true;
     this.emit('align:start', {});
     try {
@@ -632,13 +633,23 @@ export class MapEngine {
   }
 
   /** Plans everything needed to use the current view offline. */
-  planOffline(): OfflinePlan {
+  async planOffline(): Promise<OfflinePlan> {
     const b = this.map.getBounds();
-    return planOfflineArea([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], this.hires);
+    const { maxZoom } = await this.imagery.staticMosaic();
+    return planOfflineArea([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], this.hires, maxZoom);
   }
 
-  downloadOffline(plan: OfflinePlan, name: string, progress: Progress, signal?: AbortSignal) {
-    return downloadArea(plan, name, { imagery: this.imagery, trails: this.trails, hires: this.hires }, progress, signal);
+  /** Plans one of the ready-made packs (country, mountains, cities). */
+  async planPack(id: string): Promise<OfflinePlan> {
+    const pack = PACKS.find((p) => p.id === id);
+    if (!pack) throw new Error(`Unknown pack ${id}`);
+    const { maxZoom } = await this.imagery.staticMosaic();
+    return planPack(pack, maxZoom, this.hires);
+  }
+
+  async downloadOffline(plan: OfflinePlan, progress: Progress, signal?: AbortSignal) {
+    const st = await this.imagery.staticMosaic();
+    return downloadPack(plan, { imagery: this.imagery, hires: this.hires, staticMaxZoom: st.maxZoom, staticExt: st.ext }, progress, signal);
   }
 
   flyTo(lngLat: [number, number], zoom = 14) {

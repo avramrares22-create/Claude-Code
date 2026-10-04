@@ -19,6 +19,8 @@ export function decodeTerrarium(r: number, g: number, b: number): number {
 
 type Tile = { size: number; elev: Float32Array };
 
+const MIN_ZOOM = 6;
+
 export class TerrariumElevation implements ElevationProvider {
   private tiles = new Map<string, Promise<Tile | null>>();
   private ready = new Map<string, Tile | null>();
@@ -33,12 +35,17 @@ export class TerrariumElevation implements ElevationProvider {
     let z = this.zoom;
     let tiles = tilesInBBox(bbox, z);
     while (tiles.length > 64 && z > 8) tiles = tilesInBBox(bbox, --z);
-    await Promise.all(tiles.map(([tz, x, y]) => this.load(tz, x, y)));
+    await Promise.all(tiles.map(([tz, x, y]) => this.loadOrParent(tz, x, y)));
+  }
+
+  /** Falls back to coarser tiles when one is missing (offline pack saved only up to a lower zoom). */
+  private async loadOrParent(z: number, x: number, y: number): Promise<void> {
+    for (; z >= MIN_ZOOM; z--, x >>= 1, y >>= 1) if (await this.load(z, x, y)) return;
   }
 
   get(lng: number, lat: number): number | null {
     // Finest loaded zoom wins.
-    for (let z = this.zoom; z >= 8; z--) {
+    for (let z = this.zoom; z >= MIN_ZOOM; z--) {
       const v = this.sample(z, lng, lat);
       if (v !== null) return v;
     }

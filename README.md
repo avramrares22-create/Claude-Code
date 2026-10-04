@@ -10,11 +10,17 @@ Natura is an installable web app (PWA) for iOS and Linux, built on a custom map 
   - ANCPI national orthophoto when reachable
   - Esri World Imagery otherwise
 - **Every OSM path, track and rural road**, with Romanian trail markings (bandă, cruce, punct, triunghi), SAC and MTB grades, and 3D terrain.
+- **AI-corrected roads.** When you zoom in, TrailNet checks mapped trails against the imagery and nudges misplaced ones onto the real path. An auto-scan re-runs every minute (and whenever the map settles) to find more hidden trails around you.
+- **Navigation from your position.** Tap Directions on any place, trail or long-press pin. You get:
+  - a route chosen by RouteNet
+  - the road you should follow highlighted (done part greyed out)
+  - a heading-up 3D camera
+  - spoken turn-by-turn directions
+  - automatic rerouting when you leave the route
+- **Offline maps.** Download all of Romania (overview, zoom 6–12), a mountain range, a city, or just the area on screen. Satellite, terrain, labels, trails and routing then work with no signal. Downloads can be paused and resumed. Search falls back to places and trails stored on the phone.
 - **Made for the mountains:**
-  - offline areas (satellite, terrain, labels, trails)
   - track recording with GPX export
   - GPX import
-  - turn-by-turn route following with off-route warnings and one-tap reroute
   - place search
   - long-press any spot for its coordinates and elevation
   - a dark UI built for one-handed use
@@ -24,7 +30,7 @@ Everything runs on the phone. There are no API keys and no backend; static data 
 ```
 npm install
 npm run dev        # http://localhost:5173 (on your LAN too, so an iPhone can open it)
-npm test           # 77 unit tests
+npm test           # 96 unit tests
 npm run build      # typecheck and production build in dist/
 ```
 
@@ -67,11 +73,12 @@ scripts/data/            CI data builders (trail cells, mosaic pre-render)
 
 ## The models
 
-**TrailNet** (`public/models/trailnet.onnx`, 1.5 MB) is a U-Net. Its input is Sentinel-2 bands B02, B03, B04 and B08 at 10 m. It was trained on 47 Romanian landscapes with OpenStreetMap labels:
+**TrailNet** (`public/models/trailnet.onnx`) is a U-Net. Its input is Sentinel-2 bands B02, B03, B04 and B08 at 10 m. Version 3 was trained on 242 Romanian image tiles with OpenStreetMap labels:
 
 - Regions where OSM is too sparse to trust its "no trail" pixels were excluded from training.
-- Held-out regions: precision 0.52 and recall 0.32 at the app's threshold of 0.5 (±2 px tolerance).
-- Known weakness: about 16% of mapped stream pixels are mistaken for trails. An experiment adding a waterway head (`TRAILNET_HEADS=2`) did not reduce this, because Carpathian forest roads often follow streams, so it isn't shipped.
+- Held-out regions: precision 0.60 and recall 0.30 (F1 0.40) at the app's threshold of 0.3 (±2 px tolerance).
+- Known weakness: about 14% of mapped stream pixels are mistaken for trails. An experiment adding a waterway head (`TRAILNET_HEADS=2`) did not reduce this, because Carpathian forest roads often follow streams, so it isn't shipped.
+- Besides finding new trails, its output is used to shift mapped OSM ways sideways onto the path visible in the imagery. Ends and junctions stay anchored, so routing is unaffected.
 
 Scores on held-out regions are measured against OSM, so they understate real precision: every true but unmapped trail it finds counts as an error. The current scores are in `ml/trailnet-report.json`. Retrain with:
 
@@ -104,7 +111,7 @@ npm run routenet:collect && npm run routenet:build && npm run routenet:train
 - **Every push:** typecheck, tests, build.
 - **Default branch, daily:**
   - `data/trails/`: Romania-wide trail cells from the Geofabrik OSM extract, rebuilt weekly with pyosmium.
-  - `data/s2/`: a pre-rendered z6–z9 Sentinel-2 mosaic, so the country view opens instantly.
+  - `data/s2/`: a pre-rendered z6–z12 Sentinel-2 mosaic (WebP), so imagery loads instantly instead of being rendered on the phone. Only tiles whose scenes changed are re-rendered.
   - `data/scenes.json`: a scene-index snapshot.
 - Deploys to GitHub Pages.
 
@@ -113,6 +120,7 @@ npm run routenet:collect && npm run routenet:build && npm run routenet:train
 - 10 m imagery can't see narrow paths under dense canopy. GPS traces and OSM cover those.
 - Detected trails are candidates, shown with a confidence score. Verify them on the ground.
 - Legal access is taken from OSM tags. Romanian forest roads are usually closed to the public's motor vehicles even when untagged. The moto mode warns about this, and has a strict-access option.
+- Offline packs above zoom 12 are rendered on the phone while downloading, which takes a few minutes for a mountain pack.
 - ANCPI imagery may only be reachable from Romanian networks. Esri imagery is for viewing only (its terms forbid offline caching and data extraction, so TrailNet never runs on it).
 
 ## Data and attribution

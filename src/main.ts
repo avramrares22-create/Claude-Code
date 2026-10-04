@@ -7,7 +7,12 @@ import {
   MapEngine,
   parseGpxFile,
   planSize,
+  PACKS,
   removeOfflineArea,
+  storageUsage,
+  areaTooLarge,
+  type OfflineArea,
+  type OfflinePlan,
   RouteFollower,
   announce,
   buildManeuvers,
@@ -25,7 +30,7 @@ import { kvGet, kvSet } from './engine/util/kvStore';
 import { icons } from './ui/icons';
 import { location, WakeLock, type Fix } from './ui/location';
 import { profileData, renderProfile } from './ui/profile';
-import { searchPlaces, type Place } from './ui/search';
+import { searchLocal, searchPlaces, type Place } from './ui/search';
 import { Sheet } from './ui/sheet';
 import { toast } from './ui/toast';
 
@@ -198,6 +203,17 @@ function closeResults() {
   results.innerHTML = '';
 }
 
+const POI_PLACE: Record<string, Place['kind']> = { peak: 'peak', saddle: 'peak', viewpoint: 'peak', waterfall: 'water', spring: 'water', hut: 'hut', shelter: 'hut', camp: 'hut' };
+
+/** What can be searched without signal: loaded peaks/huts/trails and the saved offline packs. */
+function* localPlaces(): Generator<Place> {
+  for (const p of engine.trails.pois)
+    if (p.name) yield { name: p.name, detail: [p.kind, p.ele ? `${Math.round(p.ele)} m` : ''].filter(Boolean).join(' · '), kind: POI_PLACE[p.kind] ?? 'pin', lngLat: [p.lng, p.lat], zoom: 15 };
+  for (const t of engine.trails.trails)
+    if (t.name) yield { name: t.name, detail: `${t.kind} trail`, kind: 'pin', lngLat: t.coords[Math.floor(t.coords.length / 2)], zoom: 15 };
+  for (const pk of PACKS) yield { name: pk.name, detail: 'offline pack area', kind: 'town', lngLat: [(pk.bbox[0] + pk.bbox[2]) / 2, (pk.bbox[1] + pk.bbox[3]) / 2], zoom: pk.kind === 'country' ? 6 : 11 };
+}
+
 searchInput.addEventListener('input', () => {
   const qv = searchInput.value.trim();
   clearBtn.hidden = !qv;
@@ -208,7 +224,19 @@ searchInput.addEventListener('input', () => {
     const ac = (searchAbort = new AbortController());
     try {
       const c = engine.map.getCenter();
-      const places = await searchPlaces(qv, ac.signal, [c.lng, c.lat]);
+      const near: [number, number] = [c.lng, c.lat];
+      const local = () => searchLocal(qv, localPlaces(), near);
+      let places: Place[];
+      let offline = false;
+      try {
+        places = navigator.onLine ? await searchPlaces(qv, ac.signal, near) : local();
+        offline = !navigator.onLine;
+        if (!places.length) places = local();
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
+        places = local();
+        offline = true;
+      }
       if (ac.signal.aborted) return;
       results.hidden = false;
       results.innerHTML = places.length
@@ -218,7 +246,7 @@ searchInput.addEventListener('input', () => {
                 <span><div class="name">${esc(p.name)}</div><div class="detail">${esc(p.detail)}</div></span></button></li>`,
             )
             .join('')
-        : `<li class="empty">No places found in Romania</li>`;
+        : `<li class="empty">${offline ? 'No signal — nothing matching on this device' : 'No places found in Romania'}</li>`;
       results.querySelectorAll<HTMLButtonElement>('button[data-i]').forEach((b) =>
         b.addEventListener('click', () => {
           const p = places[Number(b.dataset.i)];
@@ -1068,11 +1096,9 @@ async function moreSheet() {
      <button class="btn block" id="gpx-import">Import GPX…</button>
      ${tracks.length ? `<h3>My tracks</h3>${tracks.slice(0, 20).map((t) => `<div class="row"><div><div class="label">${esc(t.name)}</div><div class="hint">${fmtKm(t.distance)} · ${fmtTime(t.duration)}</div></div>
         <div class="btns" style="margin:0"><button class="btn" data-show="${t.id}">Show</button><button class="btn" data-export="${t.id}">GPX</button></div></div>`).join('')}` : ''}
-     <h3>Offline</h3>
-     <div class="sub">Save the area on screen (satellite, terrain, trails, labels) for use without signal.</div>
-     <button class="btn block" id="off-plan">Download this area</button>
-     ${areas.map((a) => `<div class="row"><div><div class="label">${esc(a.name)}</div><div class="hint">${new Date(a.savedAt).toLocaleDateString()} · ${a.tiles} tiles</div></div>
-        <div class="btns" style="margin:0"><button class="btn" data-go="${a.id}">Go</button><button class="btn" data-del="${a.id}">Remove</button></div></div>`).join('')}
+     <h3>Offline maps</h3>
+     <div class="sub">Save satellite, terrain, trails and labels to use with no or weak signal. Navigation and routing keep working.</div>
+     <div id="off-section">${await offlineSectionHtml(areas)}</div>
      <h3>About</h3>
      <div class="meta">Natura · Sentinel-2 © Copernicus · Trails © OpenStreetMap contributors · TrailNet & RouteNet run on your phone.</div>`,
     wasFull ? 'full' : 'peek',
@@ -1100,62 +1126,159 @@ async function moreSheet() {
       void shareGpx(t.name, t.points);
     }),
   );
-  q('#off-plan')!.addEventListener('click', () => offlinePlanSheet());
-  sheet.content.querySelectorAll<HTMLButtonElement>('[data-go]').forEach((b) =>
-    b.addEventListener('click', () => {
-      const a = areas.find((x) => x.id === b.dataset.go)!;
-      engine.map.fitBounds(a.bbox as [number, number, number, number], { duration: 700 });
-    }),
-  );
-  sheet.content.querySelectorAll<HTMLButtonElement>('[data-del]').forEach((b) =>
-    b.addEventListener('click', async () => {
-      await removeOfflineArea(b.dataset.del!);
-      void moreSheet();
-    }),
-  );
+  bindOfflineSection(areas);
 }
 $('tab-more').addEventListener('click', () => (sheetOwner === 'more' ? sheet.close() : void moreSheet()));
 
-let offlineAbort: AbortController | null = null;
-function offlinePlanSheet() {
-  if (engine.map.getZoom() < 11) return toast('Zoom in to the area you want to save (about one valley or ridge)', { kind: 'warn' });
-  const plan = engine.planOffline();
-  const n = planSize(plan);
-  const tooBig = n > 2500;
+// ------------------------------------------------------------------ offline maps
+
+interface OfflineJob {
+  id: string;
+  name: string;
+  step: string;
+  done: number;
+  total: number;
+  ac: AbortController;
+}
+/** One download at a time; it keeps going while the sheet is closed. */
+let offlineJob: OfflineJob | null = null;
+const packPlans = new Map<string, Promise<OfflinePlan>>();
+const planFor = (id: string) => {
+  let p = packPlans.get(id);
+  if (!p) packPlans.set(id, (p = engine.planPack(id)));
+  return p;
+};
+
+const fmtMB = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.max(1, Math.round(mb))} MB`);
+/** Rough on-device render time: ~0.8 s per tile across the worker pool. */
+const fmtRender = (tiles: number) => (tiles > 60 ? ` · ~${fmtTime(tiles * 0.8)} to render` : '');
+
+function jobHtml(j: OfflineJob) {
+  return `<div class="off-job"><div class="label">Downloading ${esc(j.name)}</div>
+    <div class="bar"><span id="off-bar" style="width:${j.total ? (100 * j.done) / j.total : 0}%"></span></div>
+    <div class="row" style="padding:6px 0;border:0"><div class="hint" id="off-step">${esc(j.step)} · ${j.done}/${j.total}</div>
+    <button class="btn" id="off-cancel">Pause</button></div></div>`;
+}
+
+async function offlineSectionHtml(areas: OfflineArea[]): Promise<string> {
+  const usage = await storageUsage();
+  const saved = new Map(areas.map((a) => [a.id, a]));
+  const plans = await Promise.all(PACKS.map((p) => planFor(p.id).catch(() => null)));
+  const packRow = (i: number) => {
+    const pk = PACKS[i];
+    const plan = plans[i];
+    const a = saved.get(pk.id);
+    const busy = offlineJob?.id === pk.id;
+    const status = a ? (a.complete ? '✓ Saved' : 'Incomplete') : plan ? `${fmtMB(plan.estimateMB)}${fmtRender(plan.rendered)}` : '';
+    const action = busy ? '' : a?.complete ? `<button class="btn" data-go="${pk.id}">Show</button><button class="btn" data-del="${pk.id}">Remove</button>` : a ? `<button class="btn primary" data-dl="${pk.id}">Resume</button><button class="btn" data-del="${pk.id}">Remove</button>` : `<button class="btn" data-dl="${pk.id}">Download</button>`;
+    return `<div class="row"><div><div class="label">${esc(pk.name)}</div><div class="hint">${pk.kind === 'country' ? 'Country overview · zoom 6–12' : pk.kind === 'city' ? 'City · full detail' : 'Mountains & trails · full detail'} · ${status}</div></div>
+      <div class="btns" style="margin:0">${action}</div></div>`;
+  };
+  const custom = areas.filter((a) => !PACKS.some((p) => p.id === a.id));
+  return `${usage ? `<div class="meta">Using ${fmtMB(usage.used / 1048576)}${usage.quota ? ` of ${fmtMB(usage.quota / 1048576)} available` : ''}</div>` : ''}
+    ${offlineJob ? jobHtml(offlineJob) : ''}
+    <button class="btn block" id="off-plan" ${offlineJob ? 'disabled' : ''}>Save the area on screen</button>
+    ${custom.map((a) => `<div class="row"><div><div class="label">${esc(a.name)}</div><div class="hint">${new Date(a.savedAt).toLocaleDateString()} · ${a.sizeMB ? fmtMB(a.sizeMB) : `${a.tiles} tiles`}${a.complete ? '' : ' · incomplete'}</div></div>
+      <div class="btns" style="margin:0"><button class="btn" data-go="${a.id}">Show</button><button class="btn" data-del="${a.id}">Remove</button></div></div>`).join('')}
+    <h3>Ready-made packs</h3>
+    ${PACKS.map((_, i) => packRow(i)).join('')}`;
+}
+
+function bindOfflineSection(areas: OfflineArea[]) {
+  const root = q('#off-section');
+  if (!root) return;
+  q('#off-plan')?.addEventListener('click', () => void offlinePlanSheet());
+  q('#off-cancel')?.addEventListener('click', () => offlineJob?.ac.abort());
+  root.querySelectorAll<HTMLButtonElement>('[data-go]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const bbox = (areas.find((x) => x.id === b.dataset.go) ?? PACKS.find((x) => x.id === b.dataset.go))!.bbox;
+      engine.map.fitBounds(bbox as [number, number, number, number], { duration: 700 });
+      sheet.set('peek');
+    }),
+  );
+  root.querySelectorAll<HTMLButtonElement>('[data-del]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const a = areas.find((x) => x.id === b.dataset.del);
+      if (!confirm(`Remove “${a?.name ?? 'this area'}” from this device?`)) return;
+      b.disabled = true;
+      await removeOfflineArea(b.dataset.del!);
+      void refreshOffline();
+    }),
+  );
+  root.querySelectorAll<HTMLButtonElement>('[data-dl]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const plan = await planFor(b.dataset.dl!);
+      void startOfflineDownload(plan);
+    }),
+  );
+}
+
+/** Re-renders the offline section if the More sheet is showing. */
+async function refreshOffline() {
+  if (sheetOwner !== 'more' || !q('#off-section')) return;
+  const areas = await listOfflineAreas();
+  const root = q('#off-section');
+  if (!root) return;
+  root.innerHTML = await offlineSectionHtml(areas);
+  bindOfflineSection(areas);
+}
+
+async function startOfflineDownload(plan: OfflinePlan) {
+  if (offlineJob) return toast('Another download is running — pause it first', { kind: 'warn' });
+  if (!navigator.onLine) return toast('Connect to the internet to download maps', { kind: 'warn' });
+  const job: OfflineJob = { id: plan.pack.id, name: plan.pack.name, step: 'Starting', done: 0, total: planSize(plan) + 4, ac: new AbortController() };
+  offlineJob = job;
+  void refreshOffline();
+  let last = 0;
+  try {
+    const r = await engine.downloadOffline(
+      plan,
+      (step, done, total) => {
+        Object.assign(job, { step, done, total });
+        const now = performance.now();
+        if (now - last < 250 && done < total) return;
+        last = now;
+        const bar = q('#off-bar');
+        if (bar) bar.style.width = `${(100 * done) / total}%`;
+        const st = q('#off-step');
+        if (st) st.textContent = `${step} · ${done}/${total}`;
+      },
+      job.ac.signal,
+    );
+    toast(
+      r.failed
+        ? `Saved “${job.name}” — ${r.failed} tiles failed. Tap Resume later to complete it.`
+        : `“${job.name}” is ready to use offline`,
+      { kind: r.failed ? 'warn' : 'success', ms: 5000 },
+    );
+  } catch (err) {
+    if (job.ac.signal.aborted) toast(`Paused “${job.name}” — tap Resume to continue`, { ms: 3500 });
+    else toast(`Download failed: ${(err as Error).message}`, { kind: 'error' });
+  } finally {
+    offlineJob = null;
+    void refreshOffline();
+  }
+}
+
+/** Saves the view as a custom offline area. */
+async function offlinePlanSheet() {
+  if (engine.map.getZoom() < 10.5) return toast('Zoom in to the area you want to save (a valley, ridge or town)', { kind: 'warn' });
+  const plan = await engine.planOffline();
+  const c = engine.map.getCenter();
+  const name = searchInput.value.trim() || `Area near ${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`;
+  plan.pack = { ...plan.pack, name };
+  const tooBig = areaTooLarge(plan);
   openSheet(
     'more',
-    `<h2>Download this area</h2>
-     <div class="sub">${n} tiles · about ${Math.max(1, Math.round(plan.estimateMB))} MB${engine.hiresProvider?.id === 'esri' ? ' · Esri aerial photos can’t be stored offline (their terms); Sentinel-2 imagery will be used' : ''}</div>
-     ${tooBig ? '<div class="warnbox">This area is too large. Zoom in a little.</div>' : ''}
-     <div class="bar"><span id="off-bar"></span></div><div class="meta" id="off-step">Ready</div>
-     <div class="btns"><button class="btn primary" id="off-go" ${tooBig ? 'disabled' : ''}>Download</button><button class="btn" id="off-cancel">Cancel</button></div>`,
+    `<h2>Save this area</h2>
+     <div class="sub">${esc(name)} · about ${fmtMB(plan.estimateMB)}${fmtRender(plan.rendered)}${engine.hiresProvider?.id === 'esri' ? ' · Esri aerial photos can’t be stored offline (their terms); Sentinel-2 imagery is saved instead' : ''}</div>
+     ${tooBig ? '<div class="warnbox">This area is too large. Zoom in a little, or download a ready-made pack.</div>' : ''}
+     <div class="btns"><button class="btn primary" id="off-go" ${tooBig ? 'disabled' : ''}>Download</button><button class="btn" id="off-back">Back</button></div>`,
   );
-  q('#off-cancel')!.addEventListener('click', () => {
-    offlineAbort?.abort();
+  q('#off-back')!.addEventListener('click', () => void moreSheet());
+  q('#off-go')!.addEventListener('click', () => {
+    void startOfflineDownload(plan);
     void moreSheet();
-  });
-  q('#off-go')!.addEventListener('click', async (e) => {
-    (e.currentTarget as HTMLButtonElement).disabled = true;
-    offlineAbort = new AbortController();
-    const c = engine.map.getCenter();
-    const name = searchInput.value.trim() || `Area ${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`;
-    try {
-      const r = await engine.downloadOffline(
-        plan,
-        name,
-        (step, done, total) => {
-          const bar = q('#off-bar');
-          if (bar) bar.style.width = `${(100 * done) / total}%`;
-          const st = q('#off-step');
-          if (st) st.textContent = `${step} · ${done}/${total}`;
-        },
-        offlineAbort.signal,
-      );
-      toast(r.failed ? `Saved “${name}” (${r.failed} tiles failed — try again later to complete it)` : `Saved “${name}” for offline use`, { kind: r.failed ? 'warn' : 'success', ms: 4000 });
-      void moreSheet();
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') toast((err as Error).message, { kind: 'error' });
-    }
   });
 }
 

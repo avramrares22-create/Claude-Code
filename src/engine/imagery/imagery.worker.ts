@@ -7,6 +7,8 @@ import type { RenderRequest, WorkerReply, WorkerRequest } from './protocolTypes'
 import { renderTileRGBA, SIZE } from './tilePipeline';
 
 const TILE_CACHE = 'nature-engine-tiles-v1';
+/** Offline packs (see engine/offline.ts): never trimmed. */
+const OFFLINE_CACHE = 'nature-offline-v1';
 /** Rendered tiles kept on the device (~25 KB each → ~100 MB); oldest are evicted. */
 const MAX_CACHED_TILES = 4000;
 let putsSinceTrim = 0;
@@ -40,10 +42,28 @@ async function openCache(): Promise<Cache | null> {
 
 async function render(req: RenderRequest, signal: AbortSignal): Promise<ArrayBuffer> {
   const cache = await openCache();
-  const hit = await cache?.match(req.cacheKey);
-  if (hit) return hit.arrayBuffer();
-  const { rgba, filled, failures } = await renderTileRGBA(req, signal);
+  // Any cache (normal or offline pack) with the exact scene set.
+  const hit = 'caches' in self ? await caches.match(req.cacheKey).catch(() => undefined) : undefined;
+  if (hit) {
+    if (req.persist) await persist(req, hit.clone());
+    return hit.arrayBuffer();
+  }
+  // Offline: a pack tile from an older scene set beats a blank map.
+  if (!navigator.onLine) {
+    const stale = await caches.match(req.stableKey).catch(() => undefined);
+    if (stale) return stale.arrayBuffer();
+  }
+  let result;
+  try {
+    result = await renderTileRGBA(req, signal);
+  } catch (err) {
+    const stale = await caches.match(req.stableKey).catch(() => undefined);
+    if (stale && !signal.aborted) return stale.arrayBuffer();
+    throw err;
+  }
+  const { rgba, filled, failures } = result;
   const out = filled === 0 ? new ArrayBuffer(0) : await encodePng(rgba);
+  if (req.persist && failures === 0 && filled > 0) await persist(req, new Response(out.slice(0), { headers: { 'Content-Type': 'image/png' } }));
   // Cache only when every scene we needed was read; a failed scene may succeed next time.
   if (cache && failures === 0 && !signal.aborted) {
     await cache.put(req.cacheKey, new Response(out.slice(0), { headers: { 'Content-Type': 'image/png' } })).catch(() => {});
@@ -61,6 +81,16 @@ async function encodePng(rgba: Uint8ClampedArray): Promise<ArrayBuffer> {
   g.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, SIZE, SIZE), 0, 0);
   const blob = await canvas.convertToBlob({ type: 'image/png' });
   return blob.arrayBuffer();
+}
+
+async function persist(req: RenderRequest, res: Response) {
+  try {
+    const c = await caches.open(OFFLINE_CACHE);
+    await c.put(req.cacheKey, res.clone());
+    await c.put(req.stableKey, res);
+  } catch {
+    // storage full: the tile is still shown, just not kept for offline use
+  }
 }
 
 /** Cache keys come back in insertion order, so the first ones are the oldest. */

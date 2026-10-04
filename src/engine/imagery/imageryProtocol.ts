@@ -19,9 +19,11 @@ export function imageryTileUrl(mode: ImageryMode): string {
 /** Live counters for perf tuning (exposed as engine.imageryStats). */
 export const imageryStats = { requested: 0, done: 0, failed: 0, aborted: 0, totalMs: 0, maxMs: 0, lastError: '' };
 
-interface StaticMosaic {
+export interface StaticMosaic {
   maxZoom: number;
   ext: 'webp' | 'png';
+  /** False when the published mosaic is older than the live scene index would be. */
+  fresh: boolean;
 }
 let staticMeta: Promise<StaticMosaic> | null = null;
 
@@ -29,19 +31,27 @@ let staticMeta: Promise<StaticMosaic> | null = null;
 function staticMosaic(): Promise<StaticMosaic> {
   staticMeta ??= fetch(dataUrl('s2/meta.json'))
     .then((r) => (r.ok ? r.json() : null))
-    .then((m: { generated: string; maxZoom: number; format?: 'webp' | 'png' } | null) =>
-      m && Date.now() - Date.parse(m.generated) < 4 * 86_400_000
-        ? { maxZoom: m.maxZoom, ext: m.format ?? 'png' }
-        : { maxZoom: -1, ext: 'png' as const },
+    .then((m: { generated: string; maxZoom: number; format?: 'webp' | 'png' } | null): StaticMosaic =>
+      m
+        ? { maxZoom: m.maxZoom, ext: m.format ?? 'png', fresh: Date.now() - Date.parse(m.generated) < 4 * 86_400_000 }
+        : { maxZoom: -1, ext: 'png', fresh: false },
     )
-    .catch(() => ({ maxZoom: -1, ext: 'png' as const }));
+    .catch((): StaticMosaic => ({ maxZoom: -1, ext: 'png', fresh: false }));
   return staticMeta;
+}
+
+/** Highest zoom to take from the static mosaic now: a stale mosaic is still better than nothing offline. */
+async function staticMaxZoom(): Promise<number> {
+  const st = await staticMosaic();
+  return st.fresh || !navigator.onLine ? st.maxZoom : -1;
 }
 
 export interface ImageryHandle {
   unregister(): void;
   /** Renders (and caches on device) a tile without displaying it — for offline areas and look-ahead. */
-  prefetch(z: number, x: number, y: number, mode?: ImageryMode, signal?: AbortSignal): Promise<void>;
+  prefetch(z: number, x: number, y: number, mode?: ImageryMode, signal?: AbortSignal, persist?: boolean): Promise<void>;
+  /** The CI-published pre-rendered mosaic (maxZoom -1 if none). */
+  staticMosaic(): Promise<StaticMosaic>;
   /** Tiles currently rendering in the workers. */
   readonly busy: number;
 }
@@ -52,7 +62,8 @@ export function registerImageryProtocol(index: Promise<SceneIndex>): ImageryHand
     const scenes = (await index).scenesFor(tileBBox(z, x, y)).map((s) => ({ id: s.id, epsg: s.epsg }));
     const sig = hashString(scenes.map((s) => s.id).join(','));
     const cacheKey = `https://tiles.nature.local/s2/v${IMAGERY.rendererVersion}/${mode}/${z}/${x}/${y}.png?s=${sig}`;
-    return { z, x, y, mode, scenes, cacheKey };
+    const stableKey = `https://tiles.nature.local/s2/stable/${mode}/${z}/${x}/${y}.png`;
+    return { z, x, y, mode, scenes, cacheKey, stableKey };
   };
   maplibregl.addProtocol(IMAGERY_PROTOCOL, async (params, abort) => {
     const m = /^s2:\/\/(truecolor|ndvi)\/(\d+)\/(\d+)\/(\d+)/.exec(params.url);
@@ -62,7 +73,7 @@ export function registerImageryProtocol(index: Promise<SceneIndex>): ImageryHand
     // Country-scale zooms come pre-rendered from the daily CI build when available.
     if (mode === 'truecolor') {
       const st = await staticMosaic();
-      if (z <= st.maxZoom) {
+      if (z <= (await staticMaxZoom())) {
         const res = await fetch(dataUrl(`s2/${z}/${x}/${y}.${st.ext}`), { signal: abort.signal }).catch(() => null);
         if (res?.ok) return { data: await res.arrayBuffer() };
         // Missing (e.g. border tile): fall through to live rendering.
@@ -93,16 +104,17 @@ export function registerImageryProtocol(index: Promise<SceneIndex>): ImageryHand
       maplibregl.removeProtocol(IMAGERY_PROTOCOL);
       pool.terminate();
     },
-    async prefetch(z, x, y, mode = 'truecolor', signal) {
-      if (mode === 'truecolor' && z <= (await staticMosaic()).maxZoom) {
+    async prefetch(z, x, y, mode = 'truecolor', signal, persist = false) {
+      if (mode === 'truecolor' && z <= (await staticMaxZoom())) {
         // Pre-rendered: just warm the HTTP/service-worker cache.
         const st = await staticMosaic();
         const res = await fetch(dataUrl(`s2/${z}/${x}/${y}.${st.ext}`), { signal }).catch(() => null);
         if (res?.ok) return;
       }
       const job = await jobFor(mode, z, x, y);
-      if (job.scenes.length) await pool.render(job, signal);
+      if (job.scenes.length) await pool.render({ ...job, persist }, signal);
     },
+    staticMosaic,
     get busy() {
       return pool.busy;
     },

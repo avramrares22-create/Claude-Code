@@ -49,3 +49,29 @@ export async function searchPlaces(q: string, signal?: AbortSignal, near?: [numb
       };
     });
 }
+
+/** Lower-case and strip diacritics, so "saua sugarilor" finds "Șaua Sugărilor". */
+export const fold = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+/**
+ * Offline / low-signal search over what the app already has on the device:
+ * named peaks, huts and springs, named trails, and the saved offline packs.
+ */
+export function searchLocal(q: string, items: Iterable<Place>, near?: [number, number], limit = 8): Place[] {
+  const words = fold(q).split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const scored: Array<{ p: Place; s: number }> = [];
+  const seen = new Set<string>();
+  for (const p of items) {
+    const name = fold(p.name);
+    if (!words.every((w) => name.includes(w))) continue;
+    const key = `${name}|${p.kind}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Prefix matches first, then nearer places.
+    let s = name.startsWith(words[0]) ? 0 : 1;
+    if (near) s += Math.hypot(p.lngLat[0] - near[0], (p.lngLat[1] - near[1]) * 1.4) / 10;
+    scored.push({ p, s });
+  }
+  return scored.sort((a, b) => a.s - b.s).slice(0, limit).map((x) => x.p);
+}
