@@ -26,18 +26,19 @@ import osmium
 
 CELL_Z = 11
 HIGHWAYS = {
-    "path", "track", "footway", "bridleway", "cycleway", "steps", "via_ferrata",
-    "tertiary", "unclassified",
+    "path", "track", "footway", "bridleway", "cycleway", "steps", "via_ferrata", "pedestrian",
+    "tertiary", "unclassified", "residential", "living_street",
 }
 # Rural service roads matter (forest/quarry/hut access); driveways and car parks do not.
 SKIP_SERVICE = {"driveway", "parking_aisle", "drive-through", "alley"}
-# Urban pedestrian infrastructure is noise on a nature map.
-SKIP_FOOTWAY = {"sidewalk", "crossing", "traffic_island", "access_aisle"}
+# Sidewalks and crossings stay: bikes are routed along them instead of car roads.
+SKIP_FOOTWAY = {"traffic_island", "access_aisle"}
 ROUTES = {"hiking", "foot", "mtb", "bicycle"}
 KEEP_TAGS = {
     "highway", "name", "ref", "surface", "tracktype", "smoothness", "sac_scale", "mtb:scale",
     "trail_visibility", "informal", "access", "foot", "bicycle", "vehicle", "motor_vehicle",
     "motorcycle", "4wd_only", "width", "incline", "service", "bridge", "ford", "seasonal",
+    "footway", "segregated",
 }
 ROUTE_TAGS = {"route", "name", "ref", "osmc:symbol", "colour", "network"}
 POI_TAGS = {"natural", "waterway", "tourism", "amenity", "name", "ele"}

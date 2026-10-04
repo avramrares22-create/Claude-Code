@@ -3,6 +3,7 @@
  * the Sentinel-2 imagery engine, terrain, trail intelligence and the router.
  */
 import { MARK_COLORS } from './trails/classify';
+import { applyBasemap, type BaseMode, type Theme } from './mapStyle';
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, LngLatLike, Map as MLMap } from 'maplibre-gl';
 import type * as GeoJSON from 'geojson';
@@ -83,6 +84,8 @@ export interface EngineOptions {
   container: HTMLElement | string;
   center?: LngLatLike;
   zoom?: number;
+  baseMode?: BaseMode;
+  theme?: Theme;
 }
 
 export class MapEngine {
@@ -102,6 +105,8 @@ export class MapEngine {
   private trailAbort: AbortController | null = null;
   private pendingSync = false;
   private imageryMode: ImageryMode | 'off' = 'truecolor';
+  private baseMode: BaseMode = 'map';
+  private theme: Theme = 'light';
   private hires: HiresProvider | null = null;
 
   constructor(opts: EngineOptions) {
@@ -114,9 +119,11 @@ export class MapEngine {
     this.imagery = registerImageryProtocol(this.sceneIndex);
 
     const [w, s, e, n] = ROMANIA_BBOX;
+    this.baseMode = opts.baseMode ?? 'map';
+    this.theme = opts.theme ?? 'light';
     this.map = new maplibregl.Map({
       container: opts.container,
-      style: buildBaseStyle(),
+      style: buildBaseStyle(this.theme, this.baseMode),
       center: opts.center ?? ROMANIA_CENTER,
       zoom: opts.zoom ?? 6.5,
       maxBounds: [w - 3, s - 2, e + 3, n + 2],
@@ -138,6 +145,9 @@ export class MapEngine {
     this.ready = new Promise((resolve) => {
       this.map.once('style.load', () => {
         this.addEngineLayers();
+        // Place names stay readable above trails, but under the route being followed.
+        for (const l of this.map.getStyle().layers) if (l.id.startsWith('bm-label-')) this.map.moveLayer(l.id, 'route-done');
+        this.applyLook();
         void chooseHires().then((p) => {
           this.hires = p;
           this.applyImageryVisibility();
@@ -257,7 +267,7 @@ export class MapEngine {
       id: 'trails-line',
       type: 'line',
       source: 'trails',
-      filter: ['!', ['in', ['get', 'kind'], ['literal', ['hidden', 'detected']]]],
+      filter: ['in', ['get', 'kind'], ['literal', ['marked', 'road']]],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': ['get', 'color'],
@@ -265,6 +275,32 @@ export class MapEngine {
         // Roads are context, trails are the point: keep roads quiet.
         'line-opacity': ['match', ['get', 'kind'], 'road', 0.55, 1],
       },
+    });
+    // Footpaths dashed, tracks long-dashed (like printed hiking maps); colours follow the map type.
+    m.addLayer({
+      id: 'trails-path',
+      type: 'line',
+      source: 'trails',
+      filter: ['all', ['==', ['get', 'kind'], 'path'], ['!=', ['get', 'sidewalk'], 1]],
+      layout: { 'line-join': 'round' },
+      paint: { 'line-color': '#f3e6c4', 'line-width': width(1.15), 'line-dasharray': [1.6, 1.2] },
+    });
+    m.addLayer({
+      id: 'trails-sidewalk',
+      type: 'line',
+      source: 'trails',
+      minzoom: 16,
+      filter: ['==', ['get', 'sidewalk'], 1],
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#b9b2a6', 'line-width': width(0.8), 'line-opacity': 0.8 },
+    });
+    m.addLayer({
+      id: 'trails-track',
+      type: 'line',
+      source: 'trails',
+      filter: ['==', ['get', 'kind'], 'track'],
+      layout: { 'line-join': 'round' },
+      paint: { 'line-color': '#d9a55b', 'line-width': width(1.4), 'line-dasharray': [3.2, 1.6] },
     });
     m.addLayer({
       id: 'trails-hidden',
@@ -488,14 +524,53 @@ export class MapEngine {
     this.applyImageryVisibility();
   }
 
-  /** Sentinel mosaic always (unless off); high-res photos only in true colour. */
+  /** Imagery in Satellite/Hybrid (unless off); high-res photos only in true colour. */
   private applyImageryVisibility() {
     const mode = this.imageryMode;
-    this.map.setLayoutProperty('imagery', 'visibility', mode === 'off' ? 'none' : 'visible');
+    const sat = this.baseMode !== 'map' && mode !== 'off';
+    this.map.setLayoutProperty('imagery', 'visibility', sat ? 'visible' : 'none');
     for (const p of HIRES) {
-      const show = mode === 'truecolor' && this.hires?.id === p.id;
+      const show = sat && mode === 'truecolor' && this.hires?.id === p.id;
       this.map.setLayoutProperty(hiresId(p.id), 'visibility', show ? 'visible' : 'none');
     }
+  }
+
+  /** Map type: the drawn map, satellite with labels, or satellite with roads and labels. */
+  setBaseMode(mode: BaseMode) {
+    this.baseMode = mode;
+    if (mode !== 'map' && this.imageryMode === 'off') this.imageryMode = 'truecolor';
+    this.applyLook();
+  }
+
+  getBaseMode(): BaseMode {
+    return this.baseMode;
+  }
+
+  setTheme(theme: Theme) {
+    if (theme === this.theme) return;
+    this.theme = theme;
+    this.applyLook();
+  }
+
+  /** Re-applies basemap, imagery and trail colours for the current map type and theme. */
+  private applyLook() {
+    if (!this.map.getLayer('trails-line')) return;
+    applyBasemap(this.map, this.theme, this.baseMode);
+    this.applyImageryVisibility();
+    const drawn = this.baseMode === 'map';
+    const light = drawn && this.theme === 'light';
+    const set = (id: string, k: string, v: unknown) => this.map.getLayer(id) && this.map.setPaintProperty(id, k as 'line-color', v as never);
+    set('trails-casing', 'line-color', light ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.55)');
+    set('trails-casing', 'line-opacity', drawn ? ['match', ['get', 'kind'], ['marked', 'detected', 'hidden'], 1, 0] : ['case', ['==', ['get', 'sidewalk'], 1], 0, 1]);
+    set('trails-sidewalk', 'line-color', light ? '#b9b2a6' : '#6d6a64');
+    set('trails-path', 'line-color', light ? '#9a6a3c' : drawn ? '#d8b98c' : '#f3e6c4');
+    set('trails-track', 'line-color', light ? '#a37b4f' : drawn ? '#c9a274' : '#d9a55b');
+    // The drawn map already shows rural roads; our copies would double them.
+    set('trails-line', 'line-opacity', ['match', ['get', 'kind'], 'road', drawn ? 0 : 0.55, 1]);
+    set('trails-label', 'text-color', light ? '#5a3d22' : '#ffffff');
+    set('trails-label', 'text-halo-color', light ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.8)');
+    set('pois-label', 'text-color', light ? '#2b2620' : '#ffffff');
+    set('pois-label', 'text-halo-color', light ? 'rgba(255,255,255,0.92)' : 'rgba(0,0,0,0.8)');
   }
 
   get hiresProvider(): HiresProvider | null {
@@ -516,7 +591,11 @@ export class MapEngine {
     const f: maplibregl.FilterSpecification = ['in', ['get', 'kind'], ['literal', kinds]];
     this.map.setFilter('trails-casing', f);
     this.map.setFilter('trails-label', f);
-    this.map.setFilter('trails-line', ['all', f, ['!', ['in', ['get', 'kind'], ['literal', ['hidden', 'detected']]]]]);
+    this.map.setFilter('trails-line', ['all', f, ['in', ['get', 'kind'], ['literal', ['marked', 'road']]]]);
+    this.map.setFilter('trails-path', ['all', f, ['==', ['get', 'kind'], 'path'], ['!=', ['get', 'sidewalk'], 1]]);
+    this.map.setFilter('trails-sidewalk', ['all', f, ['==', ['get', 'sidewalk'], 1]]);
+    this.map.setFilter('trails-track', ['all', f, ['==', ['get', 'kind'], 'track']]);
+    this.map.setFilter('trails-marked-band', ['all', f, ['==', ['get', 'kind'], 'marked']]);
     this.map.setFilter('trails-hidden', ['all', f, ['==', ['get', 'kind'], 'hidden']]);
     this.map.setFilter('trails-detected', ['all', f, ['==', ['get', 'kind'], 'detected']]);
     this.map.setFilter('trails-detected-glow', ['all', f, ['==', ['get', 'kind'], 'detected']]);

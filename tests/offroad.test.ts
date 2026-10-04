@@ -79,9 +79,10 @@ describe('travel modes', () => {
   it('off-road preference swaps asphalt for the gravel track', () => {
     const g = new TrailGraph([asphalt, gravel]);
     g.attachElevation(flat);
-    const normal = findRoute(g, [25, 45], [25.01, 45], { mode: 'bike' })!;
+    // With car roads allowed, the faster asphalt wins; the off-road preference flips it.
+    const normal = findRoute(g, [25, 45], [25.01, 45], { mode: 'bike', avoidCarRoads: false })!;
     expect(normal.wayIds).toEqual([10]);
-    const offroad = findRoute(g, [25, 45], [25.01, 45], { mode: 'bike', offroad: 1 })!;
+    const offroad = findRoute(g, [25, 45], [25.01, 45], { mode: 'bike', offroad: 1, avoidCarRoads: false })!;
     expect(offroad.wayIds).toEqual([11]);
     expect(offroad.offroadShare).toBe(1);
   });

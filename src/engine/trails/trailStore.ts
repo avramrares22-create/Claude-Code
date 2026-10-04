@@ -195,6 +195,8 @@ export class TrailStore {
         properties: {
           wayId: t.wayId,
           kind: t.kind,
+          // Sidewalks/crossings: used for bike routing, drawn only when zoomed right in.
+          sidewalk: t.tags.footway === 'sidewalk' || t.tags.footway === 'crossing' ? 1 : 0,
           name: t.name ?? t.routes[0]?.name ?? '',
           hidden: t.hiddenScore,
           difficulty: t.difficulty,

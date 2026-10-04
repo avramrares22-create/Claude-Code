@@ -9,6 +9,8 @@ Natura is an installable web app (PWA) for iOS and Linux, built on a custom map 
 - **Super-zoom imagery.** Fresh Sentinel-2 imagery (10 m) is shown at every zoom. From zoom 14 it switches to sub-metre aerial photos up to zoom 21:
   - ANCPI national orthophoto when reachable
   - Esri World Imagery otherwise
+- **Three map types:** a drawn map in light and dark that follows your phone's setting, with road hierarchy, landcover, hillshade and 3D buildings; Satellite; and Hybrid. The app opens at your location.
+- **Bikes stay off car roads** by default, using sidewalks, cycleways, paths and tracks.
 - **Every OSM path, track and rural road**, with Romanian trail markings (bandă, cruce, punct, triunghi), SAC and MTB grades, and 3D terrain.
 - **AI-corrected roads.** When you zoom in, TrailNet checks mapped trails against the imagery and nudges misplaced ones onto the real path. An auto-scan re-runs every minute (and whenever the map settles) to find more hidden trails around you.
 - **Navigation from your position.** Tap Directions on any place, trail or long-press pin. You get:

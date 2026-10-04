@@ -61,7 +61,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data-cache/trails
-          key: trails-v2-${{ steps.week.outputs.week }}
+          key: trails-v3-${{ steps.week.outputs.week }}
 
       - name: Restore search index
         if: env.IS_DEPLOY == 'true'

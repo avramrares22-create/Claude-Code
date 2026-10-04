@@ -94,3 +94,19 @@ describe('findRoute', () => {
     expect(r.duration).toBeGreaterThan(back.duration);
   });
 });
+
+describe('bike: keep off car roads', () => {
+  // Street with cars straight A→B (~786 m) vs a sidewalk detour (~900 m).
+  const street = trail(20, [[1, ...A], [6, 25.005, 45.0], [2, ...B]], { highway: 'residential', name: 'Strada Lungă' });
+  const sidewalk = trail(21, [[1, ...A], [7, 25.0, 45.0006], [8, 25.01, 45.0006], [2, ...B]], { highway: 'footway', footway: 'sidewalk' });
+  const g = new TrailGraph([street, sidewalk]);
+  g.attachElevation(flat);
+  const prefs = { mode: 'bike' as const, hidden: 0, offroad: 0, maxDifficulty: 4, maxMtbScale: 3, strictAccess: false };
+
+  it('takes the sidewalk when avoiding car roads (default)', () => {
+    expect(findRoute(g, A, B, { ...prefs, avoidCarRoads: true })!.wayIds).toEqual([21]);
+  });
+  it('takes the shorter street when the option is off', () => {
+    expect(findRoute(g, A, B, { ...prefs, avoidCarRoads: false })!.wayIds).toEqual([20]);
+  });
+});

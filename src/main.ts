@@ -24,6 +24,7 @@ import {
   type TrailKind,
   type TrailProps,
   type TravelMode,
+  type BaseMode,
 } from './engine';
 import {
   assessBearRisk,
@@ -49,7 +50,17 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 // ================================================================== engine + chrome
 
-const engine = new MapEngine({ container: 'map' });
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+const savedBase = (() => {
+  try {
+    return localStorage.getItem('natura:basemode') as BaseMode | null;
+  } catch {
+    return null;
+  }
+})();
+const engine = new MapEngine({ container: 'map', baseMode: savedBase ?? 'map', theme: darkQuery.matches ? 'dark' : 'light' });
+// Map and UI follow the phone's light/dark setting, live.
+darkQuery.addEventListener('change', (e) => engine.setTheme(e.matches ? 'dark' : 'light'));
 engine.map.addControl(new maplibregl.NavigationControl({ showZoom: false, visualizePitch: true }), 'top-right');
 engine.map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 const sheet = new Sheet($('sheet'));
@@ -139,7 +150,8 @@ function reportError(msg: string) {
 window.addEventListener('error', (e) => reportError(`Something went wrong: ${e.message}`));
 window.addEventListener('unhandledrejection', (e) => {
   const err = e.reason as Error | undefined;
-  if (err?.name === 'AbortError') return;
+  // Cancelled work (a newer search, a map move) is expected, not an error.
+  if (err?.name === 'AbortError') return e.preventDefault();
   reportError(`Something went wrong: ${err?.message ?? e.reason}`);
 });
 engine.map.on('error', (e) => {
@@ -431,25 +443,39 @@ function showUser(f: Fix) {
 
 location.onError((msg) => toast(msg, { kind: 'warn', key: 'gps', ms: 5000 }));
 
+let firstFollow = true;
+function onFix(f: Fix) {
+  showUser(f);
+  if (following && !navActive) {
+    engine.map.easeTo({ center: [f.lng, f.lat], zoom: firstFollow ? Math.max(engine.map.getZoom(), 15) : engine.map.getZoom(), duration: firstFollow ? 800 : 400 });
+    firstFollow = false;
+  }
+}
+
 fabLocate.addEventListener('click', () => {
   if (following) {
     following = false;
     fabLocate.classList.remove('active');
-    if (!navActive && !recording) {
-      unsubLocate?.();
-      unsubLocate = null;
-    }
     return;
   }
   following = true;
+  firstFollow = true;
   fabLocate.classList.add('active');
-  let first = true;
+  unsubLocate ??= location.subscribe(onFix);
+  if (location.last) onFix(location.last);
+});
+
+// Open at your exact position, like phone map apps. The blue dot then stays live;
+// if you start moving the map yourself before the first fix arrives, we leave it alone.
+void engine.ready.then(() => {
+  let touched = false;
+  engine.map.once('dragstart', () => (touched = true));
+  let flown = false;
   unsubLocate ??= location.subscribe((f) => {
-    showUser(f);
-    if (following && !navActive) {
-      engine.map.easeTo({ center: [f.lng, f.lat], zoom: first ? Math.max(engine.map.getZoom(), 14) : engine.map.getZoom(), duration: first ? 800 : 400 });
-      first = false;
-    }
+    onFix(f);
+    if (flown || touched || navActive) return;
+    flown = true;
+    engine.map.flyTo({ center: [f.lng, f.lat], zoom: f.accuracy < 150 ? 15.5 : 13.5, duration: 1800, essential: true });
   });
 });
 // Stop following when the user pans the map themselves.
@@ -480,19 +506,29 @@ function applyKinds() {
 
 function layersSheet() {
   const mode = engine.getImageryMode();
+  const base = engine.getBaseMode();
   const kindChip = (k: TrailKind, color: string) =>
     `<button class="chip ${visibleKinds.has(k) ? 'on' : ''}" data-kind="${k}"><span class="dot" style="background:${color}"></span>${KIND_LABEL[k]}</button>`;
   openSheet(
     'layers',
     `<h2>Map layers</h2>
-     <h3>Imagery</h3>
-     <div class="seg" id="imagery-seg">
-       ${(['truecolor', 'ndvi', 'off'] as const).map((m) => `<button data-m="${m}" class="${mode === m ? 'on' : ''}">${{ truecolor: 'Satellite', ndvi: 'Vegetation', off: 'None' }[m]}</button>`).join('')}
+     <h3>Map type</h3>
+     <div class="maptypes" id="maptype">
+       ${(['map', 'satellite', 'hybrid'] as const)
+         .map((m) => `<button data-b="${m}" class="maptype ${base === m ? 'on' : ''}"><span class="mt-thumb mt-${m}"></span><span>${{ map: 'Map', satellite: 'Satellite', hybrid: 'Hybrid' }[m]}</span></button>`)
+         .join('')}
      </div>
-     <div class="meta">Sentinel-2 (10 m, updated every few days)${engine.hiresProvider ? ` · from zoom 14: ${esc(engine.hiresProvider.label)}` : ''}</div>
+     ${
+       base !== 'map'
+         ? `<div class="seg" id="imagery-seg" style="margin-top:10px">
+       ${(['truecolor', 'ndvi'] as const).map((m) => `<button data-m="${m}" class="${mode === m ? 'on' : ''}">${{ truecolor: 'True colour', ndvi: 'Vegetation' }[m]}</button>`).join('')}
+     </div>
+     <div class="meta">Sentinel-2 (10 m, updated every few days)${engine.hiresProvider ? ` · from zoom 14: ${esc(engine.hiresProvider.label)}` : ''}</div>`
+         : '<div class="meta">Drawn map © OpenStreetMap contributors · OpenFreeMap. Follows your phone\'s light/dark setting.</div>'
+     }
      <h3>Trails</h3>
      <div class="chips">
-       ${kindChip('marked', '#d7263d')}${kindChip('path', '#f3e6c4')}${kindChip('track', '#d9a55b')}
+       ${kindChip('marked', '#d7263d')}${kindChip('path', '#c79a64')}${kindChip('track', '#d9a55b')}
        ${kindChip('road', '#e8e8e8')}${kindChip('hidden', '#ff5fc8')}${kindChip('detected', '#35e0ff')}
      </div>
      <div class="row"><div><div class="label">Auto-scan for hidden trails</div><div class="hint">Every minute and whenever you settle on an area (GPS traces + satellite AI)</div></div>
@@ -503,9 +539,20 @@ function layersSheet() {
      <div class="row"><div><div class="label">3D terrain</div><div class="hint">Tilt with two fingers</div></div>
        <label class="switch"><input id="sw-3d" type="checkbox" ${terrainOn ? 'checked' : ''}><span></span></label></div>`,
   );
-  q('#imagery-seg')!.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+  q('#imagery-seg')?.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
     b.addEventListener('click', () => {
       engine.setImageryMode(b.dataset.m as ImageryMode | 'off');
+      layersSheet();
+    }),
+  );
+  q('#maptype')!.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+    b.addEventListener('click', () => {
+      engine.setBaseMode(b.dataset.b as BaseMode);
+      try {
+        localStorage.setItem('natura:basemode', b.dataset.b!);
+      } catch {
+        // ignore
+      }
       layersSheet();
     }),
   );
@@ -820,6 +867,8 @@ function renderRouteSheet(route: Route | null) {
     ${p.mode !== 'foot' ? slider('pref-offroad', 'Off-road', p.offroad >= 1 ? 'maximum' : p.offroad > 0 ? 'prefer dirt' : 'any surface', 0, 1, 0.5, p.offroad) : ''}
     ${p.mode === 'foot' ? slider('pref-diff', 'Max difficulty', SAC_LABEL[p.maxDifficulty], 1, 6, 1, p.maxDifficulty) : ''}
     ${p.mode === 'bike' ? slider('pref-mtb', 'Max MTB grade', `S${p.maxMtbScale}`, 0, 5, 1, p.maxMtbScale) : ''}
+    ${p.mode === 'bike' ? `<div class="row"><div><div class="label">Keep off car roads</div><div class="hint">Sidewalks, cycleways, paths and tracks first; roads with cars only when there's no other way</div></div>
+       <label class="switch"><input id="pref-nocars" type="checkbox" ${p.avoidCarRoads !== false ? 'checked' : ''}><span></span></label></div>` : ''}
     ${p.mode !== 'foot' ? `<div class="row"><div><div class="label">Confirmed legal access only</div><div class="hint">Skip ways without explicit permission</div></div>
        <label class="switch"><input id="pref-strict" type="checkbox" ${p.strictAccess ? 'checked' : ''}><span></span></label></div>` : ''}`;
   if (!route) {
@@ -889,6 +938,7 @@ function renderRouteSheet(route: Route | null) {
   bind('pref-offroad', (el) => ({ offroad: Number(el.value) }));
   bind('pref-diff', (el) => ({ maxDifficulty: Number(el.value) }));
   bind('pref-mtb', (el) => ({ maxMtbScale: Number(el.value) }));
+  bind('pref-nocars', (el) => ({ avoidCarRoads: el.checked }));
   bind('pref-strict', (el) => ({ strictAccess: el.checked }));
 }
 
