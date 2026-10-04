@@ -59,6 +59,15 @@ const savedBase = (() => {
   }
 })();
 const engine = new MapEngine({ container: 'map', baseMode: savedBase ?? 'map', theme: darkQuery.matches ? 'dark' : 'light' });
+/** iPhone held sideways: panels live in a left column instead of a bottom sheet. */
+const landscapeQuery = window.matchMedia('(orientation: landscape) and (max-height: 520px)');
+const isLandscape = () => landscapeQuery.matches;
+/** Map padding that keeps fitted content clear of the open panel (bottom sheet, or left column sideways). */
+function panelPadding(sheetShare = 0.45) {
+  return isLandscape()
+    ? { top: 40, bottom: 40, left: 360 + 30, right: 90 }
+    : { top: 90, bottom: window.innerHeight * sheetShare, left: 40, right: 40 };
+}
 // Map and UI follow the phone's light/dark setting, live.
 darkQuery.addEventListener('change', (e) => engine.setTheme(e.matches ? 'dark' : 'light'));
 engine.map.addControl(new maplibregl.NavigationControl({ showZoom: false, visualizePitch: true }), 'top-right');
@@ -346,7 +355,7 @@ async function selectItem(p: SearchItem) {
   closeResults();
   searchMarker?.remove();
   searchMarker = new maplibregl.Marker({ color: '#ff8a1f' }).setLngLat(p.lngLat).addTo(engine.map);
-  const sheetPad = { top: 90, bottom: window.innerHeight * 0.42, left: 40, right: 40 };
+  const sheetPad = panelPadding(0.42);
   if (p.bbox && p.bbox[2] - p.bbox[0] > 0.002 && p.cat !== 'river') engine.map.fitBounds(p.bbox, { padding: sheetPad, maxZoom: p.zoom, duration: 900 });
   else engine.map.flyTo({ center: p.lngLat, zoom: p.zoom, essential: true, padding: sheetPad, duration: 1100 });
   openSheet(
@@ -923,7 +932,7 @@ function renderRouteSheet(route: Route | null) {
     // Fit the route above the sheet.
     const b = new maplibregl.LngLatBounds(route.coords[0], route.coords[0]);
     route.coords.forEach((c) => b.extend(c));
-    engine.map.fitBounds(b, { padding: { top: 90, bottom: window.innerHeight * 0.5, left: 40, right: 40 }, maxZoom: 16, duration: 700 });
+    engine.map.fitBounds(b, { padding: panelPadding(0.5), maxZoom: 16, duration: 700 });
   }
   bindModeSeg();
   const bind = (id: string, apply: (el: HTMLInputElement) => Partial<RoutePreferences>) => {
@@ -1233,7 +1242,8 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
         bearing: b,
         pitch: 55,
         zoom: Math.max(16, Math.min(17.5, engine.map.getZoom())),
-        padding: { top: window.innerHeight * 0.35, bottom: 120, left: 0, right: 0 },
+        // Your position sits low in the free map area (right of the left column when sideways).
+        padding: isLandscape() ? { top: window.innerHeight * 0.3, bottom: 40, left: 360, right: 0 } : { top: window.innerHeight * 0.35, bottom: 120, left: 0, right: 0 },
         duration: 900,
         easing: (t) => t,
       });
@@ -1396,7 +1406,7 @@ fileInput.addEventListener('change', async () => {
     const all = lines.flat();
     const b = new maplibregl.LngLatBounds(all[0], all[0]);
     all.forEach((c) => b.extend(c));
-    engine.map.fitBounds(b, { padding: { top: 90, bottom: window.innerHeight * 0.45, left: 40, right: 40 }, duration: 700 });
+    engine.map.fitBounds(b, { padding: panelPadding(0.45), duration: 700 });
     const longest = g.lines.reduce((a, l) => (l.length > a.length ? l : a));
     let dist = 0;
     for (let i = 1; i < longest.length; i++) dist += haversine(longest[i - 1].lng, longest[i - 1].lat, longest[i].lng, longest[i].lat);
