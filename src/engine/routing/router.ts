@@ -6,7 +6,7 @@
  */
 import { haversine } from '../geo/geodesy';
 import { CAR_ROADS, HIDDEN_THRESHOLD, carTraffic } from '../trails/classify';
-import type { Trail, TravelMode } from '../trails/types';
+import type { Trail, TrailMode, TravelMode } from '../trails/types';
 import type { TrailGraph } from './graph';
 import { expertModel, type RouteModel } from './routeModel';
 
@@ -109,9 +109,12 @@ export function edgeTime(
   return v > 0 ? length / v : Infinity;
 }
 
+/** Car uses motor-vehicle access where it meets the trail graph. */
+const trailMode = (m: TravelMode): TrailMode => (m === 'car' ? 'moto' : m);
+
 /** Hard constraints: legal access and difficulty limits. */
 export function allowed(t: Trail, prefs: RoutePreferences): boolean {
-  const a = t.access[prefs.mode];
+  const a = t.access[trailMode(prefs.mode)];
   if (a === 'no' || (a === 'unknown' && prefs.strictAccess)) return false;
   if (prefs.mode === 'foot' && t.difficulty > prefs.maxDifficulty) return false;
   if (prefs.mode === 'bike' && t.mtbScale > prefs.maxMtbScale) return false;
@@ -127,7 +130,7 @@ function preferenceMultiplier(t: Trail, prefs: RoutePreferences): number {
   if (prefs.offroad > 0 && t.surfaceClass === 'paved') m *= 1 + 0.8 * prefs.offroad;
   // Detected trails are less certain to exist: a small, confidence-weighted surcharge.
   if (t.kind === 'detected') m *= 1 + 0.3 * (1 - t.confidence);
-  if (t.access[prefs.mode] === 'unknown' && !(prefs.mode === 'bike' && prefs.avoidCarRoads && !CAR_ROADS.has(t.tags.highway))) m *= 1.1;
+  if (t.access[trailMode(prefs.mode)] === 'unknown' && !(prefs.mode === 'bike' && prefs.avoidCarRoads && !CAR_ROADS.has(t.tags.highway))) m *= 1.1;
   if (prefs.mode === 'bike' && prefs.avoidCarRoads !== false) m *= 1 + 5 * carTraffic(t.tags);
   if (prefs.avoidBears && prefs.bearDensity) m *= 1 + prefs.avoidBears * bearPenalty(t, prefs.bearDensity);
   return m;
@@ -259,7 +262,7 @@ export function findRoute(
     }
     if (isHidden(t)) hiddenLen += pe.length;
     if (t.surfaceClass !== 'paved') offroadLen += pe.length;
-    if (t.access[mode] === 'unknown') unknownLen += pe.length;
+    if (t.access[trailMode(mode)] === 'unknown') unknownLen += pe.length;
     if (wayIds[wayIds.length - 1] !== t.wayId) wayIds.push(t.wayId);
     segments.push(segmentInfo(t));
   }

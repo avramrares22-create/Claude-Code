@@ -14,6 +14,11 @@ const MAX_CACHED_TILES = 4000;
 let putsSinceTrim = 0;
 const inflight = new Map<number, AbortController>();
 
+// A cancelled tile can leave a parallel scene fetch rejecting with nobody awaiting it; that's expected.
+self.addEventListener('unhandledrejection', (e) => {
+  if ((e.reason as Error | undefined)?.name === 'AbortError') e.preventDefault();
+});
+
 self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
   const msg = ev.data;
   if (msg.type === 'cancel') {

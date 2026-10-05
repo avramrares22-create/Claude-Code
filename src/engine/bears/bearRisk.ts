@@ -251,7 +251,7 @@ export function lightPhase(d: Date, lng: number, lat: number): LightPhase {
 const LIGHT: Record<LightPhase, number> = { day: 0.8, twilight: 1.5, night: 1.3 };
 
 /** Quiet, fast travel (MTB) surprises bears most; engines warn them off. */
-const MODE: Record<string, number> = { foot: 1.0, bike: 1.3, moto: 0.7 };
+const MODE: Record<string, number> = { foot: 1.0, bike: 1.3, moto: 0.7, car: 0.3 };
 
 // ------------------------------------------------------------------ live sightings
 

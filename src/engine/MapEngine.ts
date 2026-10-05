@@ -5,6 +5,7 @@
 import { MARK_COLORS } from './trails/classify';
 import { loadBearGrid, loadFineTile, riskIndex, seasonFactor } from './bears/bearRisk';
 import { renderZoneTile, zonePalette } from './bears/bearZones';
+import { driveRoute } from './routing/roadRouter';
 import { applyBasemap, type BaseMode, type Theme } from './mapStyle';
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, LngLatLike, Map as MLMap } from 'maplibre-gl';
@@ -714,6 +715,18 @@ export class MapEngine {
   }
 
   async planRoute(from: [number, number], to: [number, number], prefs: Partial<RoutePreferences> = DEFAULT_PREFS): Promise<Route | null> {
+    if (prefs.mode === 'car') {
+      // Elevation for the profile only when the drive is short enough for the DEM.
+      const span = Math.max(Math.abs(from[0] - to[0]), Math.abs(from[1] - to[1]));
+      if (span < 0.3) {
+        await this.elevation
+          .prepare([Math.min(from[0], to[0]) - 0.02, Math.min(from[1], to[1]) - 0.02, Math.max(from[0], to[0]) + 0.02, Math.max(from[1], to[1]) + 0.02])
+          .catch(() => {});
+      }
+      const drive = await driveRoute(from, to, span < 0.3 ? this.elevation : undefined);
+      this.showRoute(drive);
+      return drive;
+    }
     this.graph ??= new TrailGraph(this.trails.trails);
     // Elevation only around the two endpoints keeps DEM downloads bounded.
     const pad = 0.02;

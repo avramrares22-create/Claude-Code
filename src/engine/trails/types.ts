@@ -35,7 +35,10 @@ export type OsmElement = OsmWay | OsmRelation | OsmNode;
  */
 export type TrailKind = 'marked' | 'path' | 'track' | 'road' | 'hidden' | 'detected';
 
-export type TravelMode = 'foot' | 'bike' | 'moto';
+/** Modes routed on our own trail graph. */
+export type TrailMode = 'foot' | 'bike' | 'moto';
+/** Car is routed on the public road network (OSRM), not the trail graph. */
+export type TravelMode = TrailMode | 'car';
 
 /** Legal access for a mode: explicit yes, explicit no, or unknown (no tag, default rules). */
 export type Access = 'yes' | 'no' | 'unknown';
@@ -70,7 +73,7 @@ export interface Trail {
   trackGrade: number;
   /** mtb:scale 0..6; -1 = unknown. */
   mtbScale: number;
-  access: Record<TravelMode, Access>;
+  access: Record<TrailMode, Access>;
   routes: TrailRoute[];
   /** Where the geometry came from. */
   source: 'osm' | 'gps' | 'imagery';

@@ -12,7 +12,7 @@ import type {
   Trail,
   TrailKind,
   TrailRoute,
-  TravelMode,
+  TrailMode,
 } from './types';
 
 const SAC: Record<string, number> = {
@@ -95,7 +95,7 @@ export const ROAD_HIGHWAYS = new Set(['tertiary', 'unclassified', 'residential',
 export const CAR_ROADS = new Set(['tertiary', 'unclassified', 'residential']);
 const PATH_HIGHWAYS = new Set(['path', 'footway', 'bridleway', 'cycleway', 'steps', 'via_ferrata', 'pedestrian']);
 
-const ACCESS_KEYS: Record<TravelMode, string[]> = {
+const ACCESS_KEYS: Record<TrailMode, string[]> = {
   foot: ['access', 'foot'],
   bike: ['access', 'vehicle', 'bicycle'],
   moto: ['access', 'vehicle', 'motor_vehicle', 'motorcycle'],
@@ -114,7 +114,7 @@ function accessValue(v: string | undefined): Access | null {
  * road type. Romanian forest roads are usually closed to the public's motor
  * vehicles (Codul Silvic) but rarely tagged, so untagged tracks stay 'unknown'.
  */
-export function accessFor(tags: Tags, mode: TravelMode): Access {
+export function accessFor(tags: Tags, mode: TrailMode): Access {
   const keys = ACCESS_KEYS[mode];
   for (let i = keys.length - 1; i >= 0; i--) {
     const a = accessValue(tags[keys[i]]);
