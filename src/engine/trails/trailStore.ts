@@ -83,8 +83,8 @@ export class TrailStore {
   }
 
   /** Ensures every cell intersecting bbox is loaded. Resolves when all settled. */
-  async ensure(bbox: BBox, signal?: AbortSignal): Promise<{ failed: number }> {
-    const cells = tilesInBBox(bbox, OVERPASS.cellZoom).slice(0, MAX_CELLS_PER_VIEW);
+  async ensure(bbox: BBox, signal?: AbortSignal, maxCells = MAX_CELLS_PER_VIEW): Promise<{ failed: number }> {
+    const cells = tilesInBBox(bbox, OVERPASS.cellZoom).slice(0, maxCells);
     let failed = 0;
     await Promise.all(
       cells.map(([z, x, y]) => this.loadCell(z, x, y, signal).catch(() => void failed++)),

@@ -40,8 +40,10 @@ export async function searchPlaces(q: string, signal?: AbortSignal, near?: [numb
       const p = f.properties;
       const kind = kindOf(p);
       const where = [p.city ?? p.town ?? p.village, p.county].filter(Boolean).join(', ');
+      // Addresses have no name: "Strada Lungă 12" rather than an empty row.
+      const street = [p.street, p.housenumber].filter(Boolean).join(' ');
       return {
-        name: p.name ?? where ?? q,
+        name: p.name || street || where || q,
         detail: [p.osm_value?.replace(/_/g, ' '), where].filter(Boolean).join(' · '),
         kind,
         lngLat: f.geometry.coordinates,

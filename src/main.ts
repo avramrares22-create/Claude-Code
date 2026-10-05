@@ -252,9 +252,33 @@ let searchTimer: number | undefined;
 let searchMarker: maplibregl.Marker | null = null;
 const KIND_ICON: Record<Place['kind'], () => string> = { peak: icons.peak, water: icons.water, hut: icons.hut, town: icons.town, pin: icons.pin };
 
+/** Items in the list, and the query they answer ('' for suggestions / chips). */
+let shown: SearchItem[] = [];
+let shownFor = '';
+/** Enter pressed before the results for the typed text arrived: open the first one when they do. */
+let enterPending = false;
+
 function closeResults() {
   results.hidden = true;
   results.innerHTML = '';
+  shown = [];
+  shownFor = '';
+}
+
+/** Stops the debounce timer and any search still running, so stale results can't pop up later. */
+function cancelSearch() {
+  clearTimeout(searchTimer);
+  searchAbort?.abort();
+  searchAbort = null;
+  enterPending = false;
+}
+
+function startSearch(qv: string) {
+  cancelSearch();
+  const ac = (searchAbort = new AbortController());
+  runSearch(qv, ac.signal).catch((e) => {
+    if ((e as Error).name !== 'AbortError' && !ac.signal.aborted) renderItems([], '', 'Search unavailable right now', qv);
+  });
 }
 
 const POI_PLACE: Record<string, Place['kind']> = { peak: 'peak', saddle: 'peak', viewpoint: 'peak', waterfall: 'water', spring: 'water', hut: 'hut', shelter: 'hut', camp: 'hut' };
@@ -326,9 +350,9 @@ function remember(it: SearchItem) {
   }
 }
 
-let shown: SearchItem[] = [];
-function renderItems(items: SearchItem[], header = '', empty = '') {
+function renderItems(items: SearchItem[], header = '', empty = '', forQuery = '') {
   shown = items;
+  shownFor = forQuery;
   results.hidden = false;
   results.innerHTML =
     header +
@@ -383,9 +407,10 @@ async function selectItem(p: SearchItem) {
   openSheet(
     'info',
     `<div class="place-head"><span class="place-ico">${p.icon()}</span><div><h2>${esc(p.name)}</h2><div class="sub">${esc(p.detail)}</div></div></div>
-     <div class="btns"><button class="btn primary" id="pl-go">${icons.route(18)} Directions</button>${p.cat === 'trail' && p.osm?.startsWith('r') ? '<button class="btn" id="pl-trail">Show trail</button>' : ''}</div>`,
+     <div class="btns"><button class="btn primary start-btn" id="pl-start">${icons.compass(18)} Start</button><button class="btn" id="pl-go">${icons.route(18)} Directions</button>${p.cat === 'trail' && p.osm?.startsWith('r') ? '<button class="btn" id="pl-trail">Show trail</button>' : ''}</div>`,
   );
-  q('#pl-go')!.addEventListener('click', () => routeTo(p.lngLat));
+  q('#pl-start')!.addEventListener('click', () => void routeTo(p.lngLat, true));
+  q('#pl-go')!.addEventListener('click', () => void routeTo(p.lngLat));
   const showTrail = async () => {
     const segs = await routeGeometry(p.osm!, p.lngLat[0], p.lngLat[1]).catch(() => null);
     if (!segs) return toast('Trail outline not available offline yet', { kind: 'warn' });
@@ -398,45 +423,73 @@ async function selectItem(p: SearchItem) {
   if (p.cat === 'trail' && p.osm?.startsWith('r')) void showTrail();
 }
 
+const webItem = (w: Place): SearchItem => ({ name: w.name, detail: w.detail, icon: KIND_ICON[w.kind], lngLat: w.lngLat, zoom: w.zoom, source: 'web' });
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Adds web results that aren't already in the list (same name within ~2 km). */
+function mergeWeb(items: SearchItem[], web: Place[]): SearchItem[] {
+  const out = [...items];
+  for (const w of web) {
+    const dup = out.some((it) => it.name.toLowerCase() === w.name.toLowerCase() && Math.abs(it.lngLat[0] - w.lngLat[0]) + Math.abs(it.lngLat[1] - w.lngLat[1]) < 0.02);
+    if (!dup) out.push(webItem(w));
+  }
+  return out;
+}
+
 async function runSearch(qv: string, signal: AbortSignal) {
   const { focus, user } = searchFocus();
-  const local = await searchOffline(qv, focus, user).catch(() => null);
+  let localDone = false;
+  const localP = searchOffline(qv, focus, user)
+    .catch(() => null)
+    .finally(() => (localDone = true));
+  let webP: Promise<Place[]> | null = null;
+  const web = () => (webP ??= navigator.onLine ? searchPlaces(qv, signal, focus).catch(() => [] as Place[]) : Promise.resolve([] as Place[]));
+  // The offline index is a few MB: on a phone's first search it can take many
+  // seconds to arrive. Ask the web meanwhile instead of showing an empty list.
+  const slow = await Promise.race([localP.then(() => false), sleep(700).then(() => true)]);
+  if (signal.aborted) return;
+  if (slow)
+    void web().then((w) => {
+      if (!signal.aborted && !localDone && w.length) renderItems(w.map(webItem), '<li class="res-h">From the web · offline search still loading</li>', '', qv);
+    });
+  const local = await localP;
   if (signal.aborted) return;
   let items = local ? local.results.slice(0, 10).map(fromLocal) : [];
-  if (local) renderItems(items, '', '');
+  if (items.length && !enterPending) renderItems(items, '', '', qv);
   // The web (Photon) adds addresses and businesses when we're not sure or found little.
   const weak = !local || items.length < 3 || (local.confidence ?? 0) < 0.4;
-  if (navigator.onLine && weak && !local?.cue?.length) {
-    const web = await searchPlaces(qv, signal, focus).catch(() => [] as Place[]);
-    if (signal.aborted) return;
-    for (const w of web) {
-      const dup = items.some((it) => it.name.toLowerCase() === w.name.toLowerCase() && Math.abs(it.lngLat[0] - w.lngLat[0]) + Math.abs(it.lngLat[1] - w.lngLat[1]) < 0.02);
-      if (!dup) items.push({ name: w.name, detail: w.detail, icon: KIND_ICON[w.kind], lngLat: w.lngLat, zoom: w.zoom, source: 'web' });
-    }
-  } else if (!local) {
-    items = searchLocal(qv, localPlaces(), focus).map((p) => ({ name: p.name, detail: p.detail, icon: KIND_ICON[p.kind], lngLat: p.lngLat, zoom: p.zoom, source: 'local' as const }));
-  }
+  if (navigator.onLine && ((weak && !local?.cue?.length) || webP)) items = mergeWeb(items, await web());
   if (signal.aborted) return;
+  // Nothing from the index (still loading, or no signal on first launch): what's on the device.
+  if (!items.length)
+    items = searchLocal(qv, localPlaces(), focus).map((p) => ({ name: p.name, detail: p.detail, icon: KIND_ICON[p.kind], lngLat: p.lngLat, zoom: p.zoom, source: 'local' as const }));
   const header = local?.anchor ? `<li class="res-h">Near ${esc(local.anchor)}</li>` : local?.nearMe ? '<li class="res-h">Near you</li>' : '';
-  renderItems(items.slice(0, 12), header, navigator.onLine ? 'No places found in Romania' : 'No signal — nothing matching on this device');
+  renderItems(items.slice(0, 12), header, navigator.onLine ? 'No places found in Romania' : 'No signal — nothing matching on this device', qv);
+  if (enterPending) {
+    enterPending = false;
+    if (items[0]) void selectItem(items[0]);
+  }
 }
 
 searchInput.addEventListener('focus', () => {
   void warmUp().catch(() => undefined);
-  if (!searchInput.value.trim()) showSuggestions();
+  const qv = searchInput.value.trim();
+  if (!qv) showSuggestions();
+  else if (qv.length >= 2) startSearch(qv); // back to the list for what's typed, like Google Maps
 });
 searchInput.addEventListener('input', () => {
-  const qv = searchInput.value;
-  clearBtn.hidden = !qv.trim();
-  clearTimeout(searchTimer);
-  if (qv.trim().length < 2) return qv.trim() ? closeResults() : showSuggestions();
-  searchTimer = window.setTimeout(() => {
-    searchAbort?.abort();
-    const ac = (searchAbort = new AbortController());
-    runSearch(qv, ac.signal).catch((e) => {
-      if ((e as Error).name !== 'AbortError') renderItems([], '', 'Search unavailable right now');
-    });
-  }, 120);
+  const qv = searchInput.value.trim();
+  clearBtn.hidden = !qv;
+  cancelSearch();
+  if (qv.length < 2) return qv ? closeResults() : showSuggestions();
+  // Say we're on it right away (the old list belongs to a different query).
+  if (shownFor !== qv) {
+    results.hidden = false;
+    results.innerHTML = '<li class="empty">Searching…</li>';
+    shown = [];
+    shownFor = '';
+  }
+  searchTimer = window.setTimeout(() => startSearch(qv), 120);
 });
 // Google-Maps-style quick chips under the search bar: one tap shows the nearest of a kind.
 const quickChips = $('quick-chips');
@@ -456,19 +509,31 @@ setIcon('fab-go', icons.route(24));
 $('fab-go').addEventListener('click', () => $('tab-route').click());
 
 searchInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && shown[0]) void selectItem(shown[0]);
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const qv = searchInput.value.trim();
+    if (qv.length < 2) return;
+    // Only open a result that belongs to what's typed — never a stale or "Recent" row.
+    if (shownFor === qv && shown[0]) return void selectItem(shown[0]);
+    startSearch(qv);
+    enterPending = true;
+  }
   if (e.key === 'Escape') {
+    cancelSearch();
     closeResults();
     searchInput.blur();
   }
 });
 
 clearBtn.addEventListener('click', () => {
+  cancelSearch();
   searchInput.value = '';
   clearBtn.hidden = true;
   closeResults();
   searchMarker?.remove();
   searchMarker = null;
+  if (sheetOwner === 'info') sheet.close();
+  searchInput.focus();
 });
 engine.map.on('movestart', () => {
   if (document.activeElement === searchInput) searchInput.blur();
@@ -863,19 +928,25 @@ function currentFix(timeoutMs = 8000): Promise<Fix | null> {
   });
 }
 
-/** Directions from the user's position to a point (asks for a start if there is no GPS fix). */
-async function routeTo(dest: [number, number]) {
+/**
+ * Directions from the user's position to a point (asks for a start if there is no GPS fix).
+ * With `go`, navigation starts as soon as the route is ready (the place card's Start button).
+ */
+async function routeTo(dest: [number, number], go = false) {
   startRouting();
   routing.to = dest;
   addMarker(dest, '#d7263d');
-  openSheet('route', `<h2>Directions</h2>${modeSeg()}<div class="sub">Finding your position…</div>`);
+  openSheet('route', `<h2>${go ? 'Starting route' : 'Directions'}</h2>${modeSeg()}<div class="sub">Finding your position…</div>`);
   bindModeSeg();
   const here = await currentFix();
   if (!routing.active || routing.to !== dest) return;
   if (here) {
     routing.from = [here.lng, here.lat];
     addMarker(routing.from, '#2e9e44');
-    await computeRoute();
+    const sub = q('.sub');
+    if (sub && sheetOwner === 'route') sub.textContent = 'Planning the route…';
+    const route = await computeRoute();
+    if (go && route && routing.route === route) startNavigation(route);
   } else {
     routePrompt('No GPS fix yet — tap your start point on the map.');
   }
@@ -1022,18 +1093,20 @@ async function onRoutingTap(lngLat: [number, number]) {
   }
 }
 
-async function computeRoute() {
-  if (!routing.from || !routing.to) return;
+async function computeRoute(): Promise<Route | null> {
+  if (!routing.from || !routing.to) return null;
   const token = ++routing.token;
   busyScans++;
   setBusy();
   try {
     const route = await engine.planRoute(routing.from, routing.to, routing.prefs);
-    if (token !== routing.token) return; // a newer request superseded this one
+    if (token !== routing.token) return null; // a newer request superseded this one
     routing.route = route;
     renderRouteSheet(route);
+    return route;
   } catch (e) {
     if (token === routing.token) toast(`Routing failed: ${(e as Error).message}`, { kind: 'error' });
+    return null;
   } finally {
     busyScans--;
     setBusy();
@@ -1074,7 +1147,7 @@ function renderRouteSheet(route: Route | null) {
   if (!route) {
     openSheet(
       'route',
-      `<h2>No route found</h2>${modeSeg()}<div class="sub">Both points must be within 500 m of trails that connect and are open to this mode. Try points closer to the lines on the map, or relax the options.</div>${options}`,
+      `<h2>No route found</h2>${modeSeg()}<div class="sub">${navigator.onLine ? 'Both points must be within 500 m of trails or roads that connect and are open to this mode. Try points closer to the lines on the map, or relax the options.' : 'No signal, and the trails saved on this device don’t connect these points. Try points closer to the lines on the map, or relax the options.'}</div>${options}`,
     );
   } else {
     const warn =
@@ -1085,13 +1158,13 @@ function renderRouteSheet(route: Route | null) {
       'route',
       `<div class="route-head">
          <div class="rh-text"><h2>${fmtTime(route.duration)} <span class="rh-dist">(${fmtKm(route.distance)})</span></h2>
-         <div class="sub">${route.mode === 'foot' ? 'Hike' : route.mode === 'bike' ? 'Ride' : 'Moto ride'} · ${pct(route.offroadShare)} off-road${route.hiddenShare ? ` · ${pct(route.hiddenShare)} hidden trails` : ''}</div></div>
+         <div class="sub">${route.mode === 'foot' ? 'Hike' : route.mode === 'bike' ? 'Ride' : 'Moto ride'} · ${route.model === 'osrm' ? 'via roads' : `${pct(route.offroadShare)} off-road`}${route.hiddenShare ? ` · ${pct(route.hiddenShare)} hidden trails` : ''}</div></div>
          <button class="btn primary start-btn" id="nav-start">${icons.compass(18)} Start</button>
        </div>
        ${modeSeg()}
        <div class="stats">
          <div class="stat"><b>${fmtKm(route.distance)}</b><small>distance</small></div>
-         <div class="stat"><b>${fmtTime(route.duration)}</b><small>${route.model === 'routenet' ? 'RouteNet' : 'estimate'}</small></div>
+         <div class="stat"><b>${fmtTime(route.duration)}</b><small>${route.model === 'routenet' ? 'RouteNet' : route.model === 'osrm' ? 'road estimate' : 'estimate'}</small></div>
          <div class="stat"><b>↑${Math.round(route.ascent)}</b><small>m up</small></div>
          <div class="stat"><b>↓${Math.round(route.descent)}</b><small>m down</small></div>
        </div>
