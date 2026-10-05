@@ -72,10 +72,19 @@ const engine = new MapEngine({ container: 'map', baseMode: savedBase ?? 'map', t
  * show/hide, keyboard).
  */
 const appH = () => Math.round(window.visualViewport?.height ?? window.innerHeight);
+let appHNow = 0;
+const typing = () => document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
 function syncAppHeight() {
-  document.documentElement.style.setProperty('--app-h', `${appH()}px`);
+  const h = appH();
+  // The on-screen keyboard shrinks the viewport too. Ignore that: re-laying out
+  // (and resizing the map) under the keyboard made the search box lose focus.
+  if (typing() && appHNow && h < appHNow - 120) return;
+  if (h === appHNow) return;
+  appHNow = h;
+  document.documentElement.style.setProperty('--app-h', `${h}px`);
   engine?.map?.resize();
 }
+document.addEventListener('focusout', () => setTimeout(syncAppHeight, 350));
 window.visualViewport?.addEventListener('resize', syncAppHeight);
 window.addEventListener('resize', syncAppHeight);
 window.addEventListener('orientationchange', () => setTimeout(syncAppHeight, 250));
@@ -86,9 +95,14 @@ const landscapeQuery = window.matchMedia('(orientation: landscape) and (max-heig
 const isLandscape = () => landscapeQuery.matches;
 /** Map padding that keeps fitted content clear of the open panel (bottom sheet, or left column sideways). */
 function panelPadding(sheetShare = 0.45) {
-  return isLandscape()
-    ? { top: 40, bottom: 40, left: 360 + 30, right: 90 }
-    : { top: 90, bottom: appH() * sheetShare, left: 40, right: 40 };
+  if (isLandscape()) return { top: 40, bottom: 40, left: 360 + 30, right: 90 };
+  // Measure the open sheet (its height ignores the slide-in transform) so the
+  // route's far end never hides behind it.
+  const el = document.querySelector<HTMLElement>('.sheet');
+  const open = el && el.dataset.state !== 'hidden';
+  const covered = open ? el.offsetHeight + (parseFloat(getComputedStyle(el).bottom) || 0) + 24 : 0;
+  const bottom = Math.min(appH() * 0.7, Math.max(appH() * sheetShare, covered));
+  return { top: 100, bottom, left: 40, right: 40 };
 }
 // Map and UI follow the phone's light/dark setting, live.
 darkQuery.addEventListener('change', (e) => engine.setTheme(e.matches ? 'dark' : 'light'));
@@ -148,6 +162,7 @@ const MODES: Array<[TravelMode, string, () => string]> = [
   ['foot', 'Hike', () => icons.hiker()],
   ['bike', 'Bike', () => icons.bike()],
   ['moto', 'Moto', () => icons.moto()],
+  ['car', 'Car', () => icons.car()],
 ];
 
 function setTab(id: string | null) {
@@ -470,8 +485,10 @@ clearBtn.addEventListener('click', () => {
   searchMarker?.remove();
   searchMarker = null;
 });
-engine.map.on('movestart', () => {
-  if (document.activeElement === searchInput) searchInput.blur();
+// Only a finger on the map closes the keyboard — not the app's own camera moves
+// (flying to your location on open, map resizes when the keyboard appears).
+engine.map.on('movestart', (e) => {
+  if ((e as { originalEvent?: Event }).originalEvent && document.activeElement === searchInput) searchInput.blur();
 });
 
 // ================================================================== location + 3D
@@ -1071,11 +1088,21 @@ function renderRouteSheet(route: Route | null) {
        <label class="switch"><input id="pref-nocars" type="checkbox" ${p.avoidCarRoads !== false ? 'checked' : ''}><span></span></label></div>` : ''}
     ${p.mode !== 'foot' ? `<div class="row"><div><div class="label">Confirmed legal access only</div><div class="hint">Skip ways without explicit permission</div></div>
        <label class="switch"><input id="pref-strict" type="checkbox" ${p.strictAccess ? 'checked' : ''}><span></span></label></div>` : ''}`;
+  const opts = p.mode === 'car' ? '' : options;
   if (!route) {
     openSheet(
       'route',
-      `<h2>No route found</h2>${modeSeg()}<div class="sub">Both points must be within 500 m of trails that connect and are open to this mode. Try points closer to the lines on the map, or relax the options.</div>${options}`,
+      p.mode === 'car'
+        ? `<h2>No road route found</h2>${modeSeg()}<div class="sub">There's no drivable road to that point. Pick a spot closer to a road, or switch to Hike for the last part.</div>`
+        : `<h2>No ${p.mode === 'bike' ? 'bike' : p.mode === 'moto' ? 'moto' : 'hiking'} route found</h2>${modeSeg()}
+           <div class="sub">The trails from here don't connect to that point for this mode. You can drive there instead, or tap points closer to the lines on the map.</div>
+           <button class="btn primary block" id="try-car">${icons.car(18)} Drive there instead</button>${opts}`,
     );
+    q('#try-car')?.addEventListener('click', () => {
+      routing.prefs = { ...routing.prefs, mode: 'car' };
+      savePrefs();
+      void computeRoute();
+    });
   } else {
     const warn =
       route.unknownAccessShare > 0.05 && route.mode !== 'foot'
@@ -1085,25 +1112,29 @@ function renderRouteSheet(route: Route | null) {
       'route',
       `<div class="route-head">
          <div class="rh-text"><h2>${fmtTime(route.duration)} <span class="rh-dist">(${fmtKm(route.distance)})</span></h2>
-         <div class="sub">${route.mode === 'foot' ? 'Hike' : route.mode === 'bike' ? 'Ride' : 'Moto ride'} · ${pct(route.offroadShare)} off-road${route.hiddenShare ? ` · ${pct(route.hiddenShare)} hidden trails` : ''}</div></div>
+         <div class="sub">${route.mode === 'car' ? 'Drive · fastest by road' : `${route.mode === 'foot' ? 'Hike' : route.mode === 'bike' ? 'Ride' : 'Moto ride'} · ${pct(route.offroadShare)} off-road${route.hiddenShare ? ` · ${pct(route.hiddenShare)} hidden trails` : ''}`}</div></div>
          <button class="btn primary start-btn" id="nav-start">${icons.compass(18)} Start</button>
        </div>
        ${modeSeg()}
        <div class="stats">
          <div class="stat"><b>${fmtKm(route.distance)}</b><small>distance</small></div>
-         <div class="stat"><b>${fmtTime(route.duration)}</b><small>${route.model === 'routenet' ? 'RouteNet' : 'estimate'}</small></div>
-         <div class="stat"><b>↑${Math.round(route.ascent)}</b><small>m up</small></div>
-         <div class="stat"><b>↓${Math.round(route.descent)}</b><small>m down</small></div>
+         <div class="stat"><b>${fmtTime(route.duration)}</b><small>${route.model === 'routenet' ? 'RouteNet' : route.model === 'osrm' ? 'no traffic' : 'estimate'}</small></div>
+         ${
+           route.elevations.some(Number.isFinite)
+             ? `<div class="stat"><b>↑${Math.round(route.ascent)}</b><small>m up</small></div>
+         <div class="stat"><b>↓${Math.round(route.descent)}</b><small>m down</small></div>`
+             : ''
+         }
        </div>
        <div id="profile"></div>
        ${
-         route.bearIndex != null && route.mode !== 'moto'
+         route.bearIndex != null && route.mode !== 'moto' && route.mode !== 'car'
            ? `<div class="meta bear-route lvl-${riskLevel(route.bearIndex)}">🐻 Bear exposure along the way: <b>${RISK_LABEL[riskLevel(route.bearIndex)]}</b> (${route.bearIndex}/100)</div>`
            : ''
        }
-       ${sunLine(route)}
+       ${route.mode === 'car' ? '' : sunLine(route)}
        ${warn}
-       ${options}
+       ${opts}
        <div class="btns"><button class="btn" id="route-gpx">Save as GPX</button></div>`,
     );
     const pd = profileData(route.coords, route.elevations);
