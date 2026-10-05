@@ -39,6 +39,8 @@ function ensure(): Worker {
   worker.onerror = () => {
     for (const p of pending.values()) p.reject(new Error('search worker crashed'));
     pending.clear();
+    // A search waiting on the index would otherwise hang forever (and the list stay blank).
+    readyReject?.(new Error('search worker crashed'));
     worker?.terminate();
     worker = null;
     readyP = null;

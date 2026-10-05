@@ -20,6 +20,8 @@ import { SceneIndex } from './imagery/sceneIndex';
 import { TrailGraph } from './routing/graph';
 import { DEFAULT_PREFS, findRoute, type Route, type RoutePreferences } from './routing/router';
 import { LearnedRouteModel, type RouteNetWeights } from './routing/routeNet';
+import { roadRoute } from './routing/roadRouter';
+import { haversine } from './geo/geodesy';
 import type { RouteModel } from './routing/routeModel';
 import routeNetWeights from './routing/routenet.weights.json';
 import { buildBaseStyle, FONTS, hiresId } from './style';
@@ -78,6 +80,8 @@ export interface EngineEvents {
 type Handler<K extends keyof EngineEvents> = (e: EngineEvents[K]) => void;
 
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+/** Most trail cells (~20 km each) loaded to plan one route; longer trips use the road router. */
+const ROUTE_CELLS = 20;
 const AUTO_ALIGN_ZOOM = 14;
 const AUTO_SCAN_ZOOM = 12;
 const AUTO_SCAN_MS = 60_000;
@@ -714,7 +718,6 @@ export class MapEngine {
   }
 
   async planRoute(from: [number, number], to: [number, number], prefs: Partial<RoutePreferences> = DEFAULT_PREFS): Promise<Route | null> {
-    this.graph ??= new TrailGraph(this.trails.trails);
     // Elevation only around the two endpoints keeps DEM downloads bounded.
     const pad = 0.02;
     const bbox: BBox = [
@@ -723,11 +726,14 @@ export class MapEngine {
       Math.max(from[0], to[0]) + pad,
       Math.max(from[1], to[1]) + pad,
     ];
-    try {
-      await this.elevation.prepare(bbox);
-    } catch {
-      // Too large or offline: route without slope (Tobler on flat ground).
-    }
+    // The trail graph only knows the cells already on screen: load the corridor
+    // between the two points first, or a destination found by search is
+    // "unreachable" just because the trails in between were never loaded.
+    await Promise.all([
+      tilesInBBox(bbox, OVERPASS.cellZoom).length <= ROUTE_CELLS ? this.trails.ensure(bbox, undefined, ROUTE_CELLS).catch(() => undefined) : null,
+      this.elevation.prepare(bbox).catch(() => undefined), // too large or offline: route on flat ground
+    ]);
+    this.graph ??= new TrailGraph(this.trails.trails);
     this.graph.attachElevation(this.elevation);
     // Bear-aware routing: the ~200 m bear map along the way (1 km grid where finer tiles are missing).
     let bearDensity: ((lng: number, lat: number) => number) | undefined;
@@ -740,7 +746,13 @@ export class MapEngine {
         // bear map unavailable: route without it
       }
     }
-    const route = findRoute(this.graph, from, to, { ...DEFAULT_PREFS, ...prefs, bearDensity }, this.routeModel);
+    let route = findRoute(this.graph, from, to, { ...DEFAULT_PREFS, ...prefs, bearDensity }, this.routeModel);
+    // No trail connection (e.g. a lake 60 km away over main roads, which the
+    // trail cells don't carry): ask the online road router instead.
+    if (!route && navigator.onLine) {
+      route = await roadRoute(from, to, prefs.mode ?? DEFAULT_PREFS.mode).catch(() => null);
+      if (route) this.attachElevations(route);
+    }
     if (route && bearDensity) {
       // Average bear density along the way (every ~10th vertex) → the same 1–100 scale as the bear meter.
       const step = Math.max(1, Math.floor(route.coords.length / 60));
@@ -753,6 +765,25 @@ export class MapEngine {
     }
     this.showRoute(route);
     return route;
+  }
+
+  /** Elevations, climb and descent for a route that came without them (the road router). */
+  private attachElevations(route: Route) {
+    route.elevations = route.coords.map(([lng, lat]) => this.elevation.get(lng, lat) ?? NaN);
+    let prev = NaN;
+    let along = 0;
+    for (let i = 0; i < route.coords.length; i++) {
+      if (i) along += haversine(...route.coords[i - 1], ...route.coords[i]);
+      const e = route.elevations[i];
+      // Compare every ~50 m so DEM noise on a long road doesn't add up to fake climbs.
+      if (!Number.isFinite(e) || (i && along < 50 && i < route.coords.length - 1)) continue;
+      if (Number.isFinite(prev)) {
+        if (e > prev) route.ascent += e - prev;
+        else route.descent += prev - e;
+      }
+      prev = e;
+      along = 0;
+    }
   }
 
   showRoute(route: Pick<Route, 'coords'> | null) {
