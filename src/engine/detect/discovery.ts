@@ -91,17 +91,19 @@ export class Discovery {
    */
   async scanImagery(view: BBox, ways: Iterable<OsmWay>): Promise<{ bbox: BBox; trails: Trail[]; aligned: Alignment[]; cached: boolean }> {
     const bbox = Discovery.scanBox(view);
-    const key = `imagery-detect:v3:${bbox.join(',')}`;
+    const meta = await fetchJson<{ threshold: number; version?: number }>(`${BASE}models/trailnet.json`);
+    // A new model must not reuse the old model's detections or a cached old file.
+    const v = meta.version ?? 0;
+    const key = `imagery-detect:v3:m${v}:${bbox.join(',')}`;
     const cached = await kvGet<{ trails: Trail[]; aligned: Alignment[] }>(key, CACHE_TTL);
     if (cached) return { bbox, ...cached, cached: true };
-    const meta = await fetchJson<{ threshold: number }>(`${BASE}models/trailnet.json`);
     const origin = self.location.origin;
     const r = await this.runFull({
       type: 'imagery',
       bbox,
       ways: localWays(ways, bbox),
       threshold: meta.threshold,
-      cfg: { modelUrl: `${origin}${BASE}models/trailnet.onnx`, wasmBase: `${origin}${BASE}ort/` },
+      cfg: { modelUrl: `${origin}${BASE}models/trailnet.onnx?v=${v}`, wasmBase: `${origin}${BASE}ort/` },
     });
     const result = { trails: r.trails ?? [], aligned: r.aligned ?? [] };
     void kvSet(key, result);
