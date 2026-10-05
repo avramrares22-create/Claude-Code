@@ -2386,3 +2386,86 @@ body.navigating .img-date {
   border-radius: 4px;
   background: linear-gradient(90deg, rgba(255, 213, 79, 0.15), #ffca28 30%, #fb8c00 60%, #e53935 85%, #b71c1c);
 }
+
+/* ------------------------------------------------------------------ search highlight + loading skeletons */
+#search-results .name {
+  font-weight: 400;
+}
+
+#search-results .name b {
+  font-weight: 700;
+}
+
+.skel {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  animation: skel-shine 1.3s ease-in-out infinite;
+}
+
+@keyframes skel-shine {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.skel-line {
+  width: 55%;
+  height: 14px;
+  margin-top: 8px;
+}
+
+.skel-btn {
+  flex: none;
+  width: 102px;
+  height: 48px;
+  border-radius: 999px;
+}
+
+.stat.skel {
+  height: 64px;
+}
+
+.skel-profile {
+  height: 90px;
+  margin-top: 12px;
+}
+
+h2.finding {
+  font-size: 18px;
+  color: var(--text) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel::after {
+    animation: none;
+  }
+}
+
+/* AI working in the background: the Scan tab icon breathes instead of a message on screen */
+.tab.ai-busy svg {
+  color: var(--accent, #1a73e8);
+  animation: ai-breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes ai-breathe {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab.ai-busy svg {
+    animation: none;
+  }
+}

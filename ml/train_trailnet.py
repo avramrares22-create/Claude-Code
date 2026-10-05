@@ -35,6 +35,12 @@ BATCH = 16
 STEPS = int(os.environ.get("TRAILNET_STEPS", "150"))
 NEG_WEIGHT = 0.5
 HEADS = int(os.environ.get("TRAILNET_HEADS", "1"))
+# v5 "learn from mistakes": tiles the model gets wrong are drawn again and again
+# (sampling ∝ running loss) until it gets them right, and a mapped trail pixel
+# it misses costs up to 1 + MISS_PENALTY times more the more confidently it missed.
+HARD = os.environ.get("TRAILNET_HARD", "0") == "1"
+MISS_PENALTY = float(os.environ.get("TRAILNET_MISS_PENALTY", "8"))
+WIDTH = tuple(int(c) for c in os.environ.get("TRAILNET_WIDTH", "16,32,64,96").split(","))
 torch.manual_seed(0)
 np.random.seed(0)
 
@@ -75,7 +81,7 @@ def conv(i, o):
 
 
 class TrailNet(nn.Module):
-    def __init__(self, c=(16, 32, 64, 96), heads=HEADS):
+    def __init__(self, c=WIDTH, heads=HEADS):
         super().__init__()
         self.e1 = nn.Sequential(conv(4, c[0]), conv(c[0], c[0]))
         self.e2 = nn.Sequential(conv(c[0], c[1]), conv(c[1], c[1]))
@@ -98,10 +104,12 @@ class TrailNet(nn.Module):
         return self.head(d1)
 
 
-def sample_batch(items):
+def sample_batch(items, probs=None):
     xs, ys, vs, ws = [], [], [], []
-    for _ in range(BATCH):
-        _, x, y, v, wl = items[np.random.randint(len(items))]
+    idx = np.random.choice(len(items), BATCH, p=probs) if probs is not None else np.random.randint(len(items), size=BATCH)
+    sample_batch.idx = idx
+    for n in idx:
+        _, x, y, v, wl = items[n]
         H, W = y.shape
         # Bias crops towards labelled areas so batches aren't mostly empty.
         for _try in range(5):
@@ -124,14 +132,22 @@ def sample_batch(items):
     return t(xs), t(ys)[:, None], t(vs)[:, None], t(ws)[:, None]
 
 
-def loss_fn(out, y, v, wl):
+def loss_fn(out, y, v, wl, per_sample=False):
     trail = out[:, :1]
     if out.shape[1] == 1:
         # v1: trail head only; streams are ordinary (weak) negatives.
         w = v * torch.where(y > 0, torch.ones_like(y), torch.full_like(y, NEG_WEIGHT))
-        bce = F.binary_cross_entropy_with_logits(trail, y, weight=w, pos_weight=torch.tensor(3.0))
+        if HARD:
+            # Missed trail pixels: penalty grows with how confidently the model said "no trail".
+            with torch.no_grad():
+                miss = (1 - torch.sigmoid(trail)) ** 2
+            w = w * torch.where(y > 0, 1 + MISS_PENALTY * miss, torch.ones_like(y))
+        bce_px = F.binary_cross_entropy_with_logits(trail, y, weight=w, pos_weight=torch.tensor(3.0), reduction="none")
         p = torch.sigmoid(trail) * v
-        return bce + 0.5 * (1 - (2 * (p * y).sum() + 1) / (p.sum() + (y * v).sum() + 1))
+        dims = (1, 2, 3)
+        dice = 1 - (2 * (p * y).sum(dims) + 1) / (p.sum(dims) + (y * v).sum(dims) + 1)
+        each = bce_px.mean(dims) + 0.5 * dice
+        return (each.mean(), each.detach()) if per_sample else each.mean()
     water = out[:, 1:2]
     is_stream = (wl > 0).float()
     # Unlabelled pixels are weak negatives (OSM is incomplete); mapped streams are strong ones.
@@ -185,11 +201,21 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=3e-3, total_steps=EPOCHS * STEPS)
     best, history = -1.0, []
+    hard = np.ones(len(train))  # running loss per tile
     for ep in range(EPOCHS):
         t0, tot = time.time(), 0.0
         for _ in range(STEPS):
-            x, y, v, wl = sample_batch(train)
-            loss = loss_fn(model(x), y, v, wl)
+            probs = None
+            if HARD and ep >= 2:  # a couple of plain epochs first, then chase the mistakes
+                w = hard ** 1.5
+                probs = 0.7 * w / w.sum() + 0.3 / len(train)
+            x, y, v, wl = sample_batch(train, probs)
+            if HARD and HEADS == 1:
+                loss, each = loss_fn(model(x), y, v, wl, per_sample=True)
+                for n, l in zip(sample_batch.idx, each.numpy()):
+                    hard[n] = 0.7 * hard[n] + 0.3 * float(l)
+            else:
+                loss = loss_fn(model(x), y, v, wl)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -198,7 +224,8 @@ def main():
         prec, rec, f1 = evaluate(model, val)
         sfp = evaluate.stream_fp_rate
         history.append({"epoch": ep + 1, "loss": tot / STEPS, "precision": prec, "recall": rec, "f1": f1, "stream_fp": sfp})
-        print(f"ep {ep + 1:3d} loss {tot / STEPS:.4f}  val P {prec:.3f} R {rec:.3f} F1 {f1:.3f} streams→trail {sfp:.3f}  {time.time() - t0:.0f}s", flush=True)
+        hint = f"  hardest tiles {', '.join(train[n][0] for n in np.argsort(-hard)[:3])}" if HARD else ""
+        print(f"ep {ep + 1:3d} loss {tot / STEPS:.4f}  val P {prec:.3f} R {rec:.3f} F1 {f1:.3f} streams→trail {sfp:.3f}  {time.time() - t0:.0f}s{hint}", flush=True)
         if f1 > best:
             best = f1
             torch.save(model.state_dict(), os.path.join(OUT, "trailnet.pt"))
@@ -206,7 +233,7 @@ def main():
     model.eval()
     # Pick the threshold that maximises validation F1 for the app to use.
     sweep = {}
-    for t in (0.3, 0.4, 0.5, 0.6, 0.7):
+    for t in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7):
         sweep[t] = (*evaluate(model, val, t), evaluate.stream_fp_rate)
     thr = max(sweep, key=lambda t: sweep[t][2])
     report = {

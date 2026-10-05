@@ -49,6 +49,7 @@ import { profileData, renderProfile } from './ui/profile';
 import { searchLocal, searchPlaces, type Place } from './ui/search';
 import { browse, routeGeometry, searchOffline, warmUp, type SearchResult } from './ui/searchClient';
 import { CAT_LABEL, type Cat } from './engine/search/categories';
+import { highlight } from './ui/highlight';
 import { Sheet } from './ui/sheet';
 import { toast } from './ui/toast';
 
@@ -229,16 +230,22 @@ const setBusy = () => progressEl.classList.toggle('on', busyScans > 0 || !engine
 engine.map.on('dataloading', setBusy);
 engine.map.on('idle', setBusy);
 
-// AI alignment runs by itself when zoomed in; keep the user informed, quietly.
-let alignToast: (() => void) | null = null;
+// AI alignment runs by itself when zoomed in. Show it quietly — a glowing Scan
+// tab and the thin progress bar — never a message on top of what you're doing.
+let aligning = false;
 engine.on('align:start', () => {
-  alignToast?.();
-  alignToast = toast('Scanning this area with AI…', { ms: 0, key: 'align' });
+  if (!aligning) busyScans++;
+  aligning = true;
+  $('tab-scan').classList.add('ai-busy');
+  setBusy();
 });
 engine.on('align:done', ({ aligned, detected }) => {
-  alignToast?.();
-  alignToast = null;
-  if (aligned || detected) {
+  if (aligning) busyScans--;
+  aligning = false;
+  $('tab-scan').classList.remove('ai-busy');
+  setBusy();
+  const busyUser = !results.hidden || document.body.classList.contains('navigating');
+  if ((aligned || detected) && !busyUser) {
     const parts = [aligned ? `${aligned} trail${aligned > 1 ? 's' : ''} aligned` : '', detected ? `${detected} hidden found` : ''].filter(Boolean);
     toast(`AI: ${parts.join(' · ')}`, { kind: 'success', ms: 2500, key: 'align' });
   }
@@ -351,7 +358,7 @@ function renderItems(items: SearchItem[], header = '', empty = '') {
       ? items
           .map(
             (p, i) => `<li class="res" style="--i:${i}"><button class="res-main" data-i="${i}"><span class="ico">${p.icon()}</span>
-              <span class="res-text"><div class="name">${esc(p.name)}</div><div class="detail">${esc(p.detail)}${p.source === 'web' ? ' <em>· web</em>' : ''}</div></span></button>
+              <span class="res-text"><div class="name">${highlight(p.name, searchInput.value)}</div><div class="detail">${esc(p.detail)}${p.source === 'web' ? ' <em>· web</em>' : ''}</div></span></button>
               <button class="res-go" data-go="${i}" aria-label="Directions to ${esc(p.name)}">${icons.route(18)}</button></li>`,
           )
           .join('')
@@ -1044,6 +1051,14 @@ async function computeRoute() {
   const token = ++routing.token;
   busyScans++;
   setBusy();
+  // Skeleton while the route is worked out (mode buttons stay usable).
+  const label = { foot: 'hiking', bike: 'bike', moto: 'moto', car: 'driving' }[routing.prefs.mode];
+  openSheet(
+    'route',
+    `<div class="route-head"><div class="rh-text"><h2 class="finding">Finding the best ${label} route…</h2><div class="skel skel-line"></div></div><div class="skel skel-btn"></div></div>
+     ${modeSeg()}<div class="stats">${'<div class="stat skel"></div>'.repeat(4)}</div><div class="skel skel-profile"></div>`,
+  );
+  bindModeSeg();
   try {
     const route = await engine.planRoute(routing.from, routing.to, routing.prefs);
     if (token !== routing.token) return; // a newer request superseded this one
@@ -1492,6 +1507,14 @@ function showBearRisk(on: boolean) {
 
 let turnMarker: maplibregl.Marker | null = null;
 
+const buzz = (pattern: number[]) => {
+  try {
+    navigator.vibrate?.(pattern);
+  } catch {
+    // not supported
+  }
+};
+
 function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'> & { segments?: Route['segments'] }) {
   stopNavigation(false);
   void enableCompass(); // from the Start tap, so iOS may ask
@@ -1605,6 +1628,8 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
     if (!s.offRoute && stage < prev && stage < 3 && next.type !== 'depart') {
       spokenStage.set(k, stage);
       speak(announce(next, toNext));
+      // A buzz at the turn itself, so you feel it with the phone in a pocket (Android; iOS ignores it).
+      if (stage === 0) buzz([60, 80, 60]);
     }
 
     // Camera: heading-up, tilted, user low on screen — fed to the per-frame follow camera.
@@ -1628,10 +1653,12 @@ function startNavigation(route: Pick<Route, 'coords' | 'elevations' | 'duration'
     if (s.offRoute && !warned) {
       warned = true;
       speak('You are off route. Tap reroute to find a way back.');
+      buzz([200]);
     }
     if (!s.offRoute) warned = false;
     if (s.arrived) {
       speak('You have arrived at your destination.');
+      buzz([80, 60, 80, 60, 160]);
       const took = (Date.now() - navStarted) / 1000;
       stopNavigation(true);
       openSheet(
