@@ -68,7 +68,12 @@
     const slot = h('div', { 'aria-live': 'polite' });
     const btn = h('button', { class: 'btn primary', type: 'button' });
     const footer = h('footer', { class: 'focus-bar' }, slot, btn);
-    mount.appendChild(h('div', { class: 'focus' }, h('header', { class: 'focus-top' }, close, bar, xp), body, footer));
+    const focusEl = h('div', { class: 'focus' }, h('header', { class: 'focus-top' }, close, bar, xp), body, footer);
+    mount.appendChild(focusEl);
+    /* rezervăm sub conținut loc cât bara de jos (butonul + mesajul), ca să nu acopere variantele de răspuns */
+    const sizeBar = function () { focusEl.style.setProperty('--bar-h', footer.offsetHeight + 'px'); };
+    sizeBar();
+    if (window.ResizeObserver) new ResizeObserver(sizeBar).observe(footer);
 
     const api = {
       body: body,
@@ -80,6 +85,14 @@
         btn.textContent = label; btn.disabled = !!disabled; btn.onclick = fn || null; btn.hidden = !label;
       },
       focusBody: function () { body.scrollTop = 0; window.scrollTo(0, 0); },
+      /* derulează puțin pagina ca elementul să rămână vizibil deasupra barei de jos (mesaj + buton) */
+      ensureVisible: function (el) {
+        setTimeout(function () {
+          if (!el || !el.getBoundingClientRect) return;
+          const limit = window.innerHeight - footer.offsetHeight - 12, r = el.getBoundingClientRect();
+          if (r.bottom > limit) window.scrollBy({ top: Math.min(r.bottom - limit, Math.max(0, r.top - 70)), behavior: M.reducedMotion() ? 'auto' : 'smooth' });
+        }, 40);
+      },
       destroy: function () { document.removeEventListener('keydown', onKey); document.body.classList.remove('focus'); },
     };
     function onKey(ev) {

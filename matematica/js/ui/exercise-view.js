@@ -21,7 +21,7 @@
     if (ex.visual && M.visuals[ex.visual.name]) { const vh = h('div'); root.appendChild(vh); M.visuals[ex.visual.name](vh, ex.visual.cfg || {}, { done: function () {} }); }
     if (ex.figure) root.appendChild(M.figureBox(ex.figure));
 
-    let optEls = [], input = null;
+    let optEls = [], input = null, optsHost = null;
     const unitTex = ex.answer && ex.answer.unit;
     if (ex.mode === 'choice') {
       const wrap = h('div', { class: 'options', role: 'group', 'aria-label': 'Variante de răspuns' });
@@ -32,7 +32,7 @@
           h('span', { class: 'mark', 'aria-hidden': 'true' }));
         optEls.push(b); wrap.appendChild(b);
       });
-      root.appendChild(wrap);
+      root.appendChild(wrap); optsHost = wrap;
       shell.onKey = function (n) { if (!st.resolved && n >= 1 && n <= optEls.length && !optEls[n - 1].disabled) choose(n - 1); };
     } else {
       input = h('input', { class: 'input', type: 'text', inputmode: 'text', enterkeyhint: 'done', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Răspunsul tău', placeholder: 'Răspunsul tău', maxlength: '24' });
@@ -41,7 +41,7 @@
         return h('button', { type: 'button', 'aria-label': k === '√' ? 'radical' : k === ',' ? 'virgulă' : k, on: { click: function () { ins(k); } } }, k);
       }));
       const row = h('div', { class: 'answer-row' }, input, unitTex ? h('span', { class: 'unit', html: M.tex(unitTex.replace(/^\\,/, '')) }) : null);
-      root.appendChild(h('div', { class: 'answer-wrap' }, row, keys));
+      const aw = h('div', { class: 'answer-wrap' }, row, keys); root.appendChild(aw); optsHost = aw;
       shell.onKey = null;
     }
 
@@ -127,7 +127,7 @@
         return;
       }
 
-      if (res.status === 'invalid') { shell.feedback(fb('info', 'info', 'Verifică forma răspunsului', res.note || 'Scrie un număr.')); if (input) input.focus(); return; }
+      if (res.status === 'invalid') { shell.feedback(fb('info', 'info', 'Verifică forma răspunsului', res.note || 'Scrie un număr.')); shell.ensureVisible(optsHost); if (input) input.focus(); return; }
       if (res.status === 'almost') { shell.feedback(fb('info', 'info', 'Aproape!', res.note)); input.classList.add('shake'); setTimeout(function () { input.classList.remove('shake'); }, 300); return; }
 
       if (res.status === 'correct') {
@@ -158,6 +158,7 @@
       } else {
         shell.feedback(h('div', { class: 'fb bad rise', role: 'alert' }, M.icon('cross'), h('div', null, h('b', { class: 't' }, M.pickMsg('wrong')), h('div', { class: 'why', html: M.rich(why) }), h('div', { class: 'why muted small', style: { 'margin-top': '6px' } }, 'Poți cere un indiciu, apoi încearcă din nou.'))));
         shell.primary('Verifică', verify, true);
+        shell.ensureVisible(optsHost);
         if (input) { input.focus(); input.select(); }
       }
     }
