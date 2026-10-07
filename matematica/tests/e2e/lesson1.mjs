@@ -1,0 +1,11 @@
+import { open, go, finishLesson, ROOT } from './lib.mjs';
+const { browser, page, errors } = await open({ hash: '#/lectie/u1-l1' });
+await page.waitForTimeout(300);
+await page.screenshot({ path: ROOT + '/tests/shots/l1-s1.png' });
+const r = await finishLesson(page, { wrongEvery: 3 });
+console.log('lecția 1 terminată:', r);
+await page.screenshot({ path: ROOT + '/tests/shots/l1-done.png', fullPage: true });
+const st = await page.evaluate(() => { const s = M.store.get(); return { lesson: s.lessons['u1-l1'], xp: s.xp.total, att: Object.values(s.skills).reduce((a, b) => a + b.att, 0), mistakes: M.mistakeStats().slice(0, 3) }; });
+console.log(JSON.stringify(st));
+console.log('erori consolă:', errors.length ? errors : 'niciuna');
+await browser.close();

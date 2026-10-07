@@ -1,0 +1,9 @@
+{
+ "examples": {
+  "train": 6000,
+  "val": 291,
+  "test": 400
+ },
+ "familii": 31,
+ "system": "Transformi o cerere în limba română într-un plan JSON pentru generatorul de exerciții de matematică (Teorema lui Pitagora, clasa a VII-a). Nu rezolvi exerciții și nu răspunzi la alte întrebări; dacă cererea nu e despre exerciții, întorci \"templates\":[]. Răspunzi doar cu JSON."
+}

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f7fb">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Matematică pentru clasa a VII-a: lecții interactive, exerciții generate, urmărirea punctelor slabe. Funcționează fără internet.">
+  <title>Matematică · clasa a VII-a</title>
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+  <a class="sr-only" href="#view" onclick="document.getElementById('view').focus();return false;">Sari la conținut</a>
+  <div id="app" class="app">
+    <aside id="rail" class="rail" aria-label="Navigație principală"></aside>
+    <div class="main">
+      <header id="topbar" class="topbar"></header>
+      <div id="view" tabindex="-1"></div>
+    </div>
+    <nav id="tabbar" class="tabbar" aria-label="Navigație principală"></nav>
+  </div>
+  <div id="live" class="sr-only" aria-live="polite" role="status"></div>
+  <noscript><p style="padding:24px;font-family:system-ui">Acest site are nevoie de JavaScript pentru a funcționa.</p></noscript>
+
+  <!-- nucleu -->
+  <script src="js/core/ns.js"></script>
+  <script src="js/core/mathml.js"></script>
+  <script src="js/core/expr.js"></script>
+  <script src="js/core/store.js"></script>
+  <script src="js/core/progress.js"></script>
+  <script src="js/core/dom.js"></script>
+  <script src="js/core/sound.js"></script>
+  <!-- motor -->
+  <script src="js/engine/exercise.js"></script>
+  <script src="js/engine/figures.js"></script>
+  <script src="js/engine/studio.js"></script>
+  <!-- vizualizări -->
+  <script src="js/visuals/figure.js"></script>
+  <script src="js/visuals/common.js"></script>
+  <script src="js/visuals/v1.js"></script>
+  <script src="js/visuals/v2.js"></script>
+  <!-- date: Unitatea 1 și registrul cursurilor -->
+  <script src="data/unit1/helpers.js"></script>
+  <script src="data/unit1/templates-a.js"></script>
+  <script src="data/unit1/templates-b.js"></script>
+  <script src="data/unit1/unit.js"></script>
+  <script src="data/unit1/lessons-a.js"></script>
+  <script src="data/unit1/lessons-b.js"></script>
+  <script src="data/units.js"></script>
+  <script src="data/messages.js"></script>
+  <script src="data/mistakes.js"></script>
+  <!-- interfață -->
+  <script src="js/ui/shell.js"></script>
+  <script src="js/ui/exercise-view.js"></script>
+  <script src="js/ui/lesson-player.js"></script>
+  <script src="js/ui/session-view.js"></script>
+  <script src="js/ui/pages.js"></script>
+  <script src="js/ui/stats.js"></script>
+  <script src="js/ui/settings.js"></script>
+  <script src="js/ui/ai-local.js"></script>
+  <script src="js/ui/studio.js"></script>
+  <script src="js/ui/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+import { launch, FILE_URL, ROOT, watch } from './pw.mjs';
+const browser = await launch();
+const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+const page = await ctx.newPage();
+const errors = []; watch(page, errors);
+await page.goto(FILE_URL);
+await page.waitForTimeout(600);
+console.log('title:', await page.title());
+console.log('h1:', await page.locator('h1').first().textContent());
+await page.screenshot({ path: ROOT + '/tests/shots/home-390.png' });
+console.log('errors:', errors.length ? errors : 'none');
+await browser.close();

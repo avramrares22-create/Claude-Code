@@ -1,0 +1,45 @@
+/* Unitatea 1 — Teorema lui Pitagora și relațiile metrice în triunghiul dreptunghic (metadate și abilități). */
+(function (M) {
+  'use strict';
+  M.u1 = M.u1 || {};
+  M.u1.unit = {
+    id: 'u1', no: 1, track: '7', status: 'open',
+    title: 'Teorema lui Pitagora',
+    blurb: 'Triunghiul dreptunghic: teorema lui Pitagora, reciproca ei, aplicații în figuri și în viața reală, teorema înălțimii și a catetei.',
+    program: 'Programa clasa a VII-a — Capitolul „Relații metrice în triunghiul dreptunghic”',
+    skills: {
+      'p.rt.name': 'Recunoaște catetele și ipotenuza',
+      'p.rt.longest': 'Ipotenuza este cea mai lungă latură',
+      'p.sq.area': 'Aria pătratului și latura lui',
+      'p.sq.sum': 'Aria de pe ipotenuză = suma ariilor de pe catete',
+      'p.rad.est': 'Estimarea radicalilor',
+      'p.rad.simp': 'Scoaterea și introducerea factorilor sub radical',
+      'p.hyp.int': 'Ipotenuza — rezultat întreg',
+      'p.hyp.dec': 'Ipotenuza — rotunjire la zecimale',
+      'p.hyp.rad': 'Ipotenuza — radical simplificat',
+      'p.leg.int': 'Cateta — rezultat întreg',
+      'p.leg.dec': 'Cateta — rotunjire la zecimale',
+      'p.leg.rad': 'Cateta — radical simplificat',
+      'p.err.spot': 'Depistează greșeala într-o rezolvare',
+      'p.conv.check': 'Reciproca: este triunghiul dreptunghic?',
+      'p.conv.triple': 'Triplete pitagoreice',
+      'p.conv.nature': 'Natura triunghiului (ascuțit / drept / obtuz)',
+      'p.fig.rect': 'Diagonala dreptunghiului',
+      'p.fig.square': 'Diagonala pătratului',
+      'p.fig.iso': 'Triunghiul isoscel',
+      'p.fig.equi': 'Triunghiul echilateral',
+      'p.fig.rhomb': 'Rombul',
+      'p.fig.trap': 'Trapezul',
+      'p.fig.coord': 'Distanța dintre două puncte în plan',
+      'p.app.ladder': 'Probleme: scară, cablu, zmeu',
+      'p.app.screen': 'Probleme: diagonala unui ecran',
+      'p.app.path': 'Probleme: drumul cel mai scurt',
+      'p.app.multi': 'Probleme în doi pași',
+      'p.met.proj': 'Proiecții și relații între segmente',
+      'p.met.height': 'Teorema înălțimii',
+      'p.met.leg': 'Teorema catetei',
+      'p.met.hside': 'Înălțimea din ariile triunghiului',
+    },
+    lessons: [],
+  };
+})(window.M);

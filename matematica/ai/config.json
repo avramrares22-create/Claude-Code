@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "modelId": "",
+  "modelUrl": "",
+  "modelLibUrl": "",
+  "webllmUrl": "https://esm.run/@mlc-ai/web-llm",
+  "note": "Completează câmpurile după ce ai antrenat și găzduit modelul (vezi ai/README.md). Cât timp enabled este false, Studio folosește generatorul integrat."
+}
